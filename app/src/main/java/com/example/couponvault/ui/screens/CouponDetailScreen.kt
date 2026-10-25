@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -35,9 +37,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.ZoomIn
-import androidx.compose.material.icons.filled.ZoomOutMap
-import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -77,6 +77,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -86,6 +88,9 @@ import com.example.couponvault.data.Coupon
 import com.example.couponvault.data.CouponStatus
 import com.example.couponvault.ui.CouponViewModel
 import com.example.couponvault.ui.components.StatusBadge
+import com.example.couponvault.ui.theme.AmberWarning
+import com.example.couponvault.ui.theme.AmberWarningContainer
+import com.example.couponvault.ui.theme.AmberWarningOnContainer
 import com.example.couponvault.ui.theme.EmeraldGreen
 import com.example.couponvault.ui.theme.RoseError
 import com.example.couponvault.util.StorageHelper
@@ -107,8 +112,9 @@ fun CouponDetailScreen(
     val coupon = allCoupons.find { it.id == couponId }
 
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
-    var showEditCodeDialog by remember { mutableStateOf(false) }
-    var editedCodeInput by remember { mutableStateOf("") }
+    var isEditingCode by remember { mutableStateOf(false) }
+    var editedCodeInput by remember(coupon?.code) { mutableStateOf(coupon?.code ?: coupon?.ocrCode ?: "") }
+    var editErrorMessage by remember { mutableStateOf<String?>(null) }
 
     // Pinch-to-zoom transformation states
     var scale by remember { mutableFloatStateOf(1f) }
@@ -155,7 +161,7 @@ fun CouponDetailScreen(
                             fontFamily = if (coupon.code != null) FontFamily.Monospace else FontFamily.Default
                         )
                         Text(
-                            text = "Private original",
+                            text = "Private storage",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -200,6 +206,66 @@ fun CouponDetailScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Discrepancy warning banner
+            if (coupon.ocrCode != null && coupon.code != null && coupon.ocrCode != coupon.code) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = AmberWarningContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = AmberWarningOnContainer,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Code Discrepancy Flagged",
+                                fontWeight = FontWeight.Bold,
+                                color = AmberWarningOnContainer,
+                                fontSize = 14.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "QR decoded: ${coupon.code}\nOCR read: ${coupon.ocrCode}",
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = AmberWarningOnContainer
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.saveManualCode(coupon, coupon.ocrCode) { success, msg ->
+                                        if (success) {
+                                            coroutineScope.launch { snackbarHostState.showSnackbar("Switched to OCR code") }
+                                        }
+                                    }
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Switch to OCR Code", fontSize = 11.sp)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.updateStatus(coupon, CouponStatus.UNSCANNED)
+                                    coroutineScope.launch { snackbarHostState.showSnackbar("Confirmed QR code") }
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Confirm QR Code", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
             // Interactive Pinch-to-Zoom Full-Resolution Original Viewer
             Card(
                 modifier = Modifier
@@ -281,7 +347,7 @@ fun CouponDetailScreen(
                 }
             }
 
-            // Code & Copy Card
+            // Code & Edit Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -300,55 +366,116 @@ fun CouponDetailScreen(
 
                         TextButton(
                             onClick = {
-                                editedCodeInput = coupon.code ?: ""
-                                showEditCodeDialog = true
+                                isEditingCode = !isEditingCode
+                                editedCodeInput = coupon.code ?: coupon.ocrCode ?: ""
+                                editErrorMessage = null
                             }
                         ) {
                             Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Edit Code")
+                            Text(if (isEditingCode) "Cancel Edit" else "Edit Code")
                         }
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text(
-                        text = "COUPON CODE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = coupon.code ?: "No Code Extracted",
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFamily = FontFamily.Monospace,
-                            color = if (coupon.code != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                    if (isEditingCode) {
+                        OutlinedTextField(
+                            value = editedCodeInput,
+                            onValueChange = {
+                                editedCodeInput = it.uppercase()
+                                editErrorMessage = null
+                            },
+                            label = { Text("Coupon Code (Auto-Uppercase)") },
+                            singleLine = true,
+                            isError = editErrorMessage != null,
+                            supportingText = {
+                                if (editErrorMessage != null) {
+                                    Text(editErrorMessage!!, color = MaterialTheme.colorScheme.error)
+                                } else {
+                                    Text("Saving sets source=MANUAL and status=UNSCANNED")
+                                }
+                            },
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Characters,
+                                imeAction = ImeAction.Done
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onDone = {
+                                    viewModel.saveManualCode(coupon, editedCodeInput) { success, msg ->
+                                        if (success) {
+                                            isEditingCode = false
+                                            coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
+                                        } else {
+                                            editErrorMessage = msg
+                                        }
+                                    }
+                                }
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("edit_code_textfield")
                         )
 
-                        if (!coupon.code.isNullOrBlank()) {
-                            Button(
-                                onClick = {
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    clipboard.setPrimaryClip(ClipData.newPlainText("Coupon Code", coupon.code))
-                                    Toast.makeText(context, "Code copied to clipboard!", Toast.LENGTH_SHORT).show()
-                                    coroutineScope.launch {
-                                        snackbarHostState.showSnackbar("Copied: ${coupon.code}")
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Button(
+                            onClick = {
+                                viewModel.saveManualCode(coupon, editedCodeInput) { success, msg ->
+                                    if (success) {
+                                        isEditingCode = false
+                                        coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
+                                    } else {
+                                        editErrorMessage = msg
                                     }
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.testTag("copy_code_detail_button")
-                            ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Copy", fontWeight = FontWeight.Bold)
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Save Code", fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Text(
+                            text = "COUPON CODE",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = coupon.code ?: "No Code Extracted",
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (coupon.code != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                            )
+
+                            if (!coupon.code.isNullOrBlank()) {
+                                Button(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        clipboard.setPrimaryClip(ClipData.newPlainText("Coupon Code", coupon.code))
+                                        Toast.makeText(context, "Code copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                        coroutineScope.launch {
+                                            snackbarHostState.showSnackbar("Copied: ${coupon.code}")
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.testTag("copy_code_detail_button")
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Copy", fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
@@ -475,7 +602,6 @@ fun CouponDetailScreen(
 
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    // Save original to gallery
                     Button(
                         onClick = {
                             viewModel.saveToGallery(context, coupon) { success, msg ->
@@ -494,7 +620,6 @@ fun CouponDetailScreen(
                         Text("Save Original to Gallery", fontWeight = FontWeight.Bold)
                     }
 
-                    // Share original via FileProvider
                     OutlinedButton(
                         onClick = {
                             val intent = viewModel.getShareIntent(context, coupon)
@@ -537,46 +662,6 @@ fun CouponDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Edit code manual dialog
-    if (showEditCodeDialog) {
-        AlertDialog(
-            onDismissRequest = { showEditCodeDialog = false },
-            title = { Text("Edit Coupon Code") },
-            text = {
-                Column {
-                    Text(
-                        text = "Enter or correct the code printed under the QR:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = editedCodeInput,
-                        onValueChange = { editedCodeInput = it.uppercase() },
-                        label = { Text("Code") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.updateCode(coupon, editedCodeInput)
-                        showEditCodeDialog = false
-                    }
-                ) {
-                    Text("Save")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showEditCodeDialog = false }) {
                     Text("Cancel")
                 }
             }

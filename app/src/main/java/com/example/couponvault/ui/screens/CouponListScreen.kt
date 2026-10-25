@@ -1,15 +1,36 @@
 package com.example.couponvault.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.widget.Toast
+import android.Manifest
+import android.content.pm.PackageManager
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material3.Switch
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,35 +50,55 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MediumTopAppBar
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,6 +111,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -78,9 +120,13 @@ import com.example.couponvault.data.Coupon
 import com.example.couponvault.data.CouponStatus
 import com.example.couponvault.ui.CouponViewModel
 import com.example.couponvault.ui.components.StatusBadge
+import com.example.couponvault.ui.theme.AmberWarning
+import com.example.couponvault.ui.theme.AmberWarningContainer
+import com.example.couponvault.ui.theme.AmberWarningOnContainer
 import com.example.couponvault.ui.theme.EmeraldGreen
-import com.example.couponvault.ui.theme.PrimaryBlue
+import com.example.couponvault.ui.theme.RoseError
 import com.example.couponvault.util.StorageHelper
+import kotlinx.coroutines.launch
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -88,16 +134,99 @@ import java.io.File
 fun CouponListScreen(
     viewModel: CouponViewModel,
     onNavigateToCapture: () -> Unit,
-    onNavigateToDetail: (Long) -> Unit
+    onNavigateToDetail: (Long) -> Unit,
+    onNavigateToReviewQueue: () -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
     val coupons by viewModel.coupons.collectAsStateWithLifecycle()
     val unscannedCount by viewModel.unscannedCount.collectAsStateWithLifecycle()
+    val needsReviewCount by viewModel.needsReviewCount.collectAsStateWithLifecycle()
     val selectedFilter by viewModel.selectedFilter.collectAsStateWithLifecycle()
     val highlightedId by viewModel.highlightedCouponId.collectAsStateWithLifecycle()
     val captureFeedback by viewModel.captureFeedback.collectAsStateWithLifecycle()
+    val batchProgress by viewModel.batchProgress.collectAsStateWithLifecycle()
 
-    val snackbarHostState = remember { SnackbarHostState() }
+    val selectedCouponIds by viewModel.selectedCouponIds.collectAsStateWithLifecycle()
+    val isSelectionMode by viewModel.isSelectionMode.collectAsStateWithLifecycle()
+
+    val queueState by viewModel.queueState.collectAsStateWithLifecycle()
+    val isOverlayEnabled by viewModel.isOverlayEnabled.collectAsStateWithLifecycle()
+    val isServiceRunning by viewModel.isServiceRunning.collectAsStateWithLifecycle()
+    val autoMarkRedeemed by viewModel.autoMarkRedeemed.collectAsStateWithLifecycle()
+
+    var showOverlayPermissionDialog by remember { mutableStateOf(false) }
+    var pendingEnableOverlay by rememberSaveable { mutableStateOf(false) }
+
+    // Notification permission launcher for Android 13+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        if (Settings.canDrawOverlays(context)) {
+            viewModel.setOverlayEnabled(true, context)
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (pendingEnableOverlay) {
+                    if (Settings.canDrawOverlays(context)) {
+                        pendingEnableOverlay = false
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        viewModel.setOverlayEnabled(true, context)
+                    } else {
+                        pendingEnableOverlay = false
+                        viewModel.setOverlayEnabled(false, context)
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val onToggleOverlay: (Boolean) -> Unit = { shouldEnable ->
+        if (shouldEnable) {
+            if (!Settings.canDrawOverlays(context)) {
+                pendingEnableOverlay = true
+                showOverlayPermissionDialog = true
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                viewModel.setOverlayEnabled(true, context)
+            }
+        } else {
+            pendingEnableOverlay = false
+            viewModel.setOverlayEnabled(false, context)
+        }
+    }
+
+    var showMenu by remember { mutableStateOf(false) }
+    var showBulkDeleteDialog by remember { mutableStateOf(false) }
+
+    // SAF Folder Picker Launcher for export all originals
+    val openDocumentTreeLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri != null) {
+            viewModel.exportAllOriginals(context, treeUri) { success, msg ->
+                coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
+            }
+        }
+    }
 
     LaunchedEffect(captureFeedback) {
         captureFeedback?.let { feedback ->
@@ -112,153 +241,380 @@ fun CouponListScreen(
             .testTag("coupon_list_screen"),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface)
-            ) {
-                MediumTopAppBar(
+            if (isSelectionMode) {
+                // Bulk Selection Mode TopAppBar
+                TopAppBar(
                     title = {
-                        Column {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                        Text(
+                            text = "${selectedCouponIds.size} selected",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { viewModel.clearCouponSelection() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close selection")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { viewModel.selectAllCoupons() }) {
+                            Icon(Icons.Default.SelectAll, contentDescription = "Select all")
+                        }
+                        IconButton(onClick = { viewModel.bulkUpdateStatus(CouponStatus.REDEEMED) }) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = "Mark Redeemed", tint = EmeraldGreen)
+                        }
+                        IconButton(onClick = { viewModel.bulkUpdateStatus(CouponStatus.UNSCANNED) }) {
+                            Icon(Icons.Default.QrCodeScanner, contentDescription = "Mark Unscanned")
+                        }
+                        IconButton(onClick = { viewModel.bulkUpdateStatus(CouponStatus.FAILED) }) {
+                            Icon(Icons.Default.ErrorOutline, contentDescription = "Mark Failed")
+                        }
+                        IconButton(onClick = { showBulkDeleteDialog = true }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete selected", tint = RoseError)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                ) {
+                    MediumTopAppBar(
+                        title = {
+                            Column {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "CouponVault",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 24.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Lock,
+                                                contentDescription = "Private storage",
+                                                modifier = Modifier.size(10.dp),
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text(
+                                                text = "Private",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "CouponVault",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 24.sp
+                                    text = "$unscannedCount unscanned • ${coupons.size} total",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Box(
+                            }
+                        },
+                        colors = TopAppBarDefaults.mediumTopAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ),
+                        actions = {
+                            // Overflow menu
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                            }
+
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                if (needsReviewCount > 0) {
+                                    DropdownMenuItem(
+                                        text = { Text("Needs Review Queue ($needsReviewCount)") },
+                                        leadingIcon = { Icon(Icons.Default.HelpOutline, contentDescription = null, tint = AmberWarning) },
+                                        onClick = {
+                                            showMenu = false
+                                            onNavigateToReviewQueue()
+                                        }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Export All Originals (SAF Folder)") },
+                                    leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
+                                    onClick = {
+                                        showMenu = false
+                                        openDocumentTreeLauncher.launch(null)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share Codes as CSV") },
+                                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                                    onClick = {
+                                        showMenu = false
+                                        coroutineScope.launch {
+                                            val intent = viewModel.getShareCsvIntent(context)
+                                            context.startActivity(Intent.createChooser(intent, "Share codes CSV"))
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    )
+
+                    // Prominent Floating paste button card
+                    val isOverlayActive = isOverlayEnabled && isServiceRunning
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .testTag("floating_paste_card"),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isOverlayActive) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                            }
+                        ),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (isOverlayActive) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant
+                            }
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (isOverlayActive) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.surface
+                                                }
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Layers,
+                                            contentDescription = null,
+                                            tint = if (isOverlayActive) {
+                                                MaterialTheme.colorScheme.onPrimary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "Floating paste button",
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                        Text(
+                                            text = if (queueState.isAllDone) {
+                                                "All coupons redeemed"
+                                            } else {
+                                                "${queueState.remainingCount} in queue • Tap to copy into Havells"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = isOverlayActive,
+                                    onCheckedChange = { onToggleOverlay(it) },
+                                    modifier = Modifier.testTag("floating_paste_switch")
+                                )
+                            }
+
+                            if (queueState.currentCode != null || isOverlayActive) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Row(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.75f))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Lock,
-                                            contentDescription = "Private storage",
-                                            modifier = Modifier.size(10.dp),
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                        Spacer(modifier = Modifier.width(3.dp))
                                         Text(
-                                            text = "Private",
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Bold
+                                            text = "Current:",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = queueState.currentCode ?: "None copied yet",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (queueState.currentCode != null) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
+                                        )
+                                    }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.clickable {
+                                            viewModel.setAutoMarkRedeemed(!autoMarkRedeemed)
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "Auto-mark redeemed",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Checkbox(
+                                            checked = autoMarkRedeemed,
+                                            onCheckedChange = { viewModel.setAutoMarkRedeemed(it) },
+                                            modifier = Modifier.size(20.dp).testTag("auto_mark_redeemed_checkbox")
                                         )
                                     }
                                 }
                             }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = if (unscannedCount == 1) "1 unscanned coupon waiting"
-                                else "$unscannedCount unscanned coupons waiting",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
                         }
-                    },
-                    colors = TopAppBarDefaults.mediumTopAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    actions = {
-                        // Quick badge pill for unscanned count
+                    }
+
+                    // Needs Review Banner if items pending
+                    if (needsReviewCount > 0) {
                         Surface(
-                            shape = CircleShape,
-                            color = if (unscannedCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.padding(end = 16.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            color = AmberWarningContainer,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .clickable { onNavigateToReviewQueue() }
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.QrCodeScanner,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp),
-                                    tint = if (unscannedCount > 0) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.HelpOutline,
+                                        contentDescription = null,
+                                        tint = AmberWarningOnContainer,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "$needsReviewCount coupons need review (OCR / unverified)",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = AmberWarningOnContainer
+                                    )
+                                }
                                 Text(
-                                    text = "$unscannedCount Unscanned",
+                                    text = "Review Queue →",
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (unscannedCount > 0) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = AmberWarningOnContainer
                                 )
                             }
                         }
                     }
-                )
 
-                // Filter row with chips
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    FilterChip(
-                        selected = selectedFilter == null,
-                        onClick = { viewModel.setFilter(null) },
-                        label = { Text("All (${coupons.size})") },
-                        modifier = Modifier.testTag("filter_all")
-                    )
+                    // Filter chips row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilterChip(
+                            selected = selectedFilter == null,
+                            onClick = { viewModel.setFilter(null) },
+                            label = { Text("All (${coupons.size})") },
+                            modifier = Modifier.testTag("filter_all")
+                        )
 
-                    FilterChip(
-                        selected = selectedFilter == CouponStatus.UNSCANNED,
-                        onClick = { viewModel.setFilter(CouponStatus.UNSCANNED) },
-                        label = { Text("Unscanned") },
-                        modifier = Modifier.testTag("filter_unscanned")
-                    )
+                        FilterChip(
+                            selected = selectedFilter == CouponStatus.UNSCANNED,
+                            onClick = { viewModel.setFilter(CouponStatus.UNSCANNED) },
+                            label = { Text("Unscanned ($unscannedCount)") },
+                            modifier = Modifier.testTag("filter_unscanned")
+                        )
 
-                    FilterChip(
-                        selected = selectedFilter == CouponStatus.REDEEMED,
-                        onClick = { viewModel.setFilter(CouponStatus.REDEEMED) },
-                        label = { Text("Redeemed") },
-                        modifier = Modifier.testTag("filter_redeemed")
-                    )
+                        FilterChip(
+                            selected = selectedFilter == CouponStatus.REDEEMED,
+                            onClick = { viewModel.setFilter(CouponStatus.REDEEMED) },
+                            label = { Text("Redeemed") },
+                            modifier = Modifier.testTag("filter_redeemed")
+                        )
 
-                    FilterChip(
-                        selected = selectedFilter == CouponStatus.NEEDS_REVIEW,
-                        onClick = { viewModel.setFilter(CouponStatus.NEEDS_REVIEW) },
-                        label = { Text("Needs Review") },
-                        modifier = Modifier.testTag("filter_needs_review")
-                    )
+                        FilterChip(
+                            selected = selectedFilter == CouponStatus.NEEDS_REVIEW,
+                            onClick = { viewModel.setFilter(CouponStatus.NEEDS_REVIEW) },
+                            label = { Text("Needs Review ($needsReviewCount)") },
+                            modifier = Modifier.testTag("filter_needs_review")
+                        )
 
-                    FilterChip(
-                        selected = selectedFilter == CouponStatus.FAILED,
-                        onClick = { viewModel.setFilter(CouponStatus.FAILED) },
-                        label = { Text("Failed") },
-                        modifier = Modifier.testTag("filter_failed")
-                    )
+                        FilterChip(
+                            selected = selectedFilter == CouponStatus.FAILED,
+                            onClick = { viewModel.setFilter(CouponStatus.FAILED) },
+                            label = { Text("Failed") },
+                            modifier = Modifier.testTag("filter_failed")
+                        )
+                    }
                 }
             }
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = onNavigateToCapture,
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.testTag("fab_capture")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            if (!isSelectionMode) {
+                FloatingActionButton(
+                    onClick = onNavigateToCapture,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.testTag("fab_capture")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.CameraAlt,
-                        contentDescription = "Capture coupon"
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Capture",
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = "Capture coupon"
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Capture",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -285,13 +641,23 @@ fun CouponListScreen(
                     key = { it.id }
                 ) { coupon ->
                     val isHighlighted = coupon.id == highlightedId
+                    val isSelected = selectedCouponIds.contains(coupon.id)
 
                     CouponItemCard(
                         coupon = coupon,
                         isHighlighted = isHighlighted,
+                        isSelected = isSelected,
+                        isSelectionMode = isSelectionMode,
                         onClick = {
-                            viewModel.clearHighlight()
-                            onNavigateToDetail(coupon.id)
+                            if (isSelectionMode) {
+                                viewModel.toggleCouponSelection(coupon.id)
+                            } else {
+                                viewModel.clearHighlight()
+                                onNavigateToDetail(coupon.id)
+                            }
+                        },
+                        onLongClick = {
+                            viewModel.toggleCouponSelection(coupon.id)
                         },
                         onCopyCode = { code ->
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -303,39 +669,164 @@ fun CouponListScreen(
             }
         }
     }
+
+    // Batch progress indicator modal
+    batchProgress?.let { progress ->
+        Dialog(onDismissRequest = {}) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator(
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(44.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = progress.title,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    LinearProgressIndicator(
+                        progress = { if (progress.total > 0) progress.current.toFloat() / progress.total.toFloat() else 0f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "${progress.current} of ${progress.total}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+
+    // Bulk Delete Dialog
+    if (showBulkDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showBulkDeleteDialog = false },
+            title = { Text("Delete ${selectedCouponIds.size} Coupons?") },
+            text = {
+                Text("These coupon records will be removed. The original image files will also be deleted from private storage if no other coupon references them.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBulkDeleteDialog = false
+                        viewModel.bulkDelete()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RoseError)
+                ) {
+                    Text("Delete", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBulkDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Overlay Permission Explanation Dialog
+    if (showOverlayPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showOverlayPermissionDialog = false
+                pendingEnableOverlay = false
+            },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Layers,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = {
+                Text("Display Over Other Apps")
+            },
+            text = {
+                Text("To paste coupon codes into Havells or other apps one after another, CouponVault needs permission to display a floating button over other apps.\n\nPlease turn on \"Allow display over other apps\" for CouponVault.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showOverlayPermissionDialog = false
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier.testTag("open_overlay_settings_button")
+                ) {
+                    Text("Open Settings")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showOverlayPermissionDialog = false
+                        pendingEnableOverlay = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CouponItemCard(
     coupon: Coupon,
     isHighlighted: Boolean,
+    isSelected: Boolean,
+    isSelectionMode: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onCopyCode: (String) -> Unit
 ) {
     val context = LocalContext.current
     val borderColor by animateColorAsState(
-        targetValue = if (isHighlighted) MaterialTheme.colorScheme.primary else Color.Transparent,
-        animationSpec = tween(durationMillis = 400),
+        targetValue = when {
+            isSelected -> MaterialTheme.colorScheme.primary
+            isHighlighted -> MaterialTheme.colorScheme.primary
+            else -> Color.Transparent
+        },
+        animationSpec = tween(durationMillis = 300),
         label = "border_color"
     )
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .testTag("coupon_card_${coupon.id}"),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isHighlighted) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
-            } else {
-                MaterialTheme.colorScheme.surface
+            containerColor = when {
+                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                isHighlighted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+                else -> MaterialTheme.colorScheme.surface
             }
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         border = BorderStroke(
-            width = if (isHighlighted) 2.dp else 1.dp,
-            color = if (isHighlighted) borderColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            width = if (isSelected || isHighlighted) 2.dp else 1.dp,
+            color = if (isSelected || isHighlighted) borderColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
         )
     ) {
         Row(
@@ -344,6 +835,14 @@ fun CouponItemCard(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (isSelectionMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onClick() },
+                    modifier = Modifier.padding(end = 8.dp)
+                )
+            }
+
             // Downsampled thumbnail via Coil
             Box(
                 modifier = Modifier
@@ -376,7 +875,7 @@ fun CouponItemCard(
                 ) {
                     StatusBadge(status = coupon.status)
 
-                    if (!coupon.code.isNullOrBlank()) {
+                    if (!coupon.code.isNullOrBlank() && !isSelectionMode) {
                         IconButton(
                             onClick = { onCopyCode(coupon.code) },
                             modifier = Modifier
@@ -407,8 +906,8 @@ fun CouponItemCard(
                     )
                 } else {
                     Text(
-                        text = "No code extracted",
-                        fontSize = 15.sp,
+                        text = if (coupon.status == CouponStatus.NEEDS_REVIEW) "Tap to review photo & code" else "No code extracted",
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.error,
                         maxLines = 1
@@ -417,11 +916,22 @@ fun CouponItemCard(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                Text(
-                    text = StorageHelper.formatDateTime(coupon.createdAt),
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = StorageHelper.formatDateTime(coupon.createdAt),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = coupon.source.name,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
     }
@@ -465,7 +975,7 @@ fun EmptyCouponsView(
 
         Text(
             text = if (filter == null) {
-                "Capture coupons in batch mode. Photos are saved privately without cluttering your phone gallery, and Havells QR codes are automatically decoded."
+                "Capture coupons via in-app CameraX or tap Import to select existing photos from your phone gallery without cluttering storage."
             } else {
                 "There are currently no coupons matching this filter."
             },

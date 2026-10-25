@@ -20,6 +20,7 @@ import com.example.couponvault.ui.CouponViewModel
 import com.example.couponvault.ui.screens.CaptureScreen
 import com.example.couponvault.ui.screens.CouponDetailScreen
 import com.example.couponvault.ui.screens.CouponListScreen
+import com.example.couponvault.ui.screens.ReviewQueueScreen
 import com.example.couponvault.ui.theme.CouponVaultTheme
 
 class MainActivity : ComponentActivity() {
@@ -29,6 +30,8 @@ class MainActivity : ComponentActivity() {
 
         val app = application as CouponVaultApplication
         val repository = app.repository
+        val queueManager = app.queueManager
+        val preferences = app.overlayPreferences
 
         setContent {
             CouponVaultTheme {
@@ -37,8 +40,22 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val viewModel: CouponViewModel = viewModel(
-                        factory = CouponViewModel.provideFactory(repository)
+                        factory = CouponViewModel.provideFactory(repository, queueManager, preferences)
                     )
+
+                    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+                    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+                        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                                viewModel.resyncOverlayState(this@MainActivity)
+                            }
+                        }
+                        lifecycleOwner.lifecycle.addObserver(observer)
+                        onDispose {
+                            lifecycleOwner.lifecycle.removeObserver(observer)
+                        }
+                    }
+
                     CouponVaultAppNav(viewModel = viewModel)
                 }
             }
@@ -63,12 +80,24 @@ fun CouponVaultAppNav(viewModel: CouponViewModel) {
                 },
                 onNavigateToDetail = { couponId ->
                     navController.navigate("detail/$couponId")
+                },
+                onNavigateToReviewQueue = {
+                    navController.navigate("review_queue")
                 }
             )
         }
 
         composable("capture") {
             CaptureScreen(
+                viewModel = viewModel,
+                onNavigateBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
+        composable("review_queue") {
+            ReviewQueueScreen(
                 viewModel = viewModel,
                 onNavigateBack = {
                     navController.popBackStack()

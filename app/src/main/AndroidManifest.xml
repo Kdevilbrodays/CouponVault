@@ -6,6 +6,11 @@
         android:name="android.hardware.camera"
         android:required="false" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:name="com.example.couponvault.CouponVaultApplication"
@@ -28,6 +33,28 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name="com.example.couponvault.overlay.FloatingOverlayService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Floating overlay button that allows users to rapidly copy queued coupon codes to clipboard while entering them into merchant redemption apps." />
+        </service>
+
+        <receiver
+            android:name="com.example.couponvault.overlay.OverlayActionReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.couponvault.ACTION_OVERLAY_COPY_NEXT" />
+                <action android:name="com.example.couponvault.ACTION_OVERLAY_REPEAT" />
+                <action android:name="com.example.couponvault.ACTION_OVERLAY_FAILED" />
+                <action android:name="com.example.couponvault.ACTION_OVERLAY_STOP" />
+            </intent-filter>
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

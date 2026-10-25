@@ -1,13 +1,16 @@
 package com.example.couponvault.util
 
+import android.app.PendingIntent
+import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import androidx.core.content.FileProvider
+import com.example.couponvault.data.Coupon
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -41,6 +44,31 @@ object StorageHelper {
     }
 
     /**
+     * Copies an image from a content Uri (e.g. system Photo Picker) into private filesDir/originals/
+     */
+    fun copyUriToPrivateOriginal(context: Context, sourceUri: Uri): File {
+        val targetFile = createOriginalFile(context)
+        context.contentResolver.openInputStream(sourceUri)?.use { input ->
+            FileOutputStream(targetFile).use { output ->
+                input.copyTo(output)
+            }
+        } ?: error("Unable to open picked image stream")
+        return targetFile
+    }
+
+    /**
+     * Creates a delete request for gallery originals on Android 11+ (API 30+)
+     * Returns a PendingIntent to show the system confirmation dialog.
+     */
+    fun createGalleryDeleteRequest(contentResolver: ContentResolver, uris: List<Uri>): PendingIntent? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            MediaStore.createDeleteRequest(contentResolver, uris)
+        } else {
+            null
+        }
+    }
+
+    /**
      * Deletes a file only if it is no longer referenced by any coupon in the database.
      */
     fun deleteFileIfUnreferenced(filePath: String, referenceCount: Int): Boolean {
@@ -55,7 +83,7 @@ object StorageHelper {
 
     /**
      * Copies the private original JPEG into MediaStore Pictures/CouponVault
-     * Works on Android 10+ (API 29+) without requiring any storage permissions.
+     * Works on Android 10+ (API 29+) without requiring storage permissions.
      */
     fun saveOriginalToGallery(context: Context, originalFile: File): Result<Uri> {
         return runCatching {
@@ -112,6 +140,98 @@ object StorageHelper {
             putExtra(Intent.EXTRA_SUBJECT, shareText)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+    }
+
+    /**
+     * Generates CSV text for coupons: code,status,source,createdAt,redeemedAt,filename
+     */
+    fun generateCsvContent(coupons: List<Coupon>): String {
+        val sb = StringBuilder()
+        sb.append("code,status,source,createdAt,redeemedAt,filename\n")
+        for (coupon in coupons) {
+            val code = coupon.code ?: ""
+            val status = coupon.status.name
+            val source = coupon.source.name
+            val createdAt = coupon.createdAt.toString()
+            val redeemedAt = coupon.redeemedAt?.toString() ?: ""
+            val filename = File(coupon.imagePath).name
+            sb.append("\"$code\",$status,$source,$createdAt,$redeemedAt,\"$filename\"\n")
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Creates an Intent to share codes as a CSV file attachment.
+     */
+    fun createShareCsvIntent(context: Context, coupons: List<Coupon>): Intent {
+        val csvContent = generateCsvContent(coupons)
+        val cacheFile = File(context.cacheDir, "coupon_codes_${System.currentTimeMillis()}.csv")
+        cacheFile.writeText(csvContent)
+
+        val authority = "${context.packageName}.fileprovider"
+        val contentUri: Uri = FileProvider.getUriForFile(context, authority, cacheFile)
+
+        return Intent(Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(Intent.EXTRA_STREAM, contentUri)
+            putExtra(Intent.EXTRA_SUBJECT, "CouponVault Export - ${coupons.size} codes")
+            putExtra(Intent.EXTRA_TEXT, "Exported ${coupons.size} coupons from CouponVault.")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+
+    /**
+     * Exports all originals and codes.csv to the chosen document tree folder using SAF.
+     */
+    fun exportAllToTreeFolder(
+        context: Context,
+        treeUri: Uri,
+        coupons: List<Coupon>,
+        onProgress: (current: Int, total: Int) -> Unit
+    ): Result<Int> = runCatching {
+        val resolver = context.contentResolver
+        val treeDocUri = DocumentsContract.buildDocumentUriUsingTree(
+            treeUri,
+            DocumentsContract.getTreeDocumentId(treeUri)
+        )
+
+        // Find unique image files
+        val uniqueFiles = coupons.map { File(it.imagePath) }.filter { it.exists() }.distinctBy { it.absolutePath }
+        val totalItems = uniqueFiles.size + 1 // +1 for codes.csv
+
+        var current = 0
+        for (file in uniqueFiles) {
+            val newFileUri = DocumentsContract.createDocument(
+                resolver,
+                treeDocUri,
+                "image/jpeg",
+                file.name
+            ) ?: error("Could not create destination file for ${file.name}")
+
+            resolver.openOutputStream(newFileUri)?.use { out ->
+                FileInputStream(file).use { input ->
+                    input.copyTo(out)
+                }
+            }
+            current++
+            onProgress(current, totalItems)
+        }
+
+        // Write codes.csv
+        val csvUri = DocumentsContract.createDocument(
+            resolver,
+            treeDocUri,
+            "text/csv",
+            "codes.csv"
+        ) ?: error("Could not create codes.csv")
+
+        resolver.openOutputStream(csvUri)?.use { out ->
+            out.write(generateCsvContent(coupons).toByteArray())
+        }
+        current++
+        onProgress(current, totalItems)
+
+        uniqueFiles.size
     }
 
     fun formatDateTime(timestamp: Long): String {

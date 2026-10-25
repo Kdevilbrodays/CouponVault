@@ -18,5 +18,6 @@ data class Coupon(
     val status: CouponStatus,
     val source: CouponSource,
     val createdAt: Long = System.currentTimeMillis(),
-    val redeemedAt: Long? = null
+    val redeemedAt: Long? = null,
+    val ocrCode: String? = null
 )

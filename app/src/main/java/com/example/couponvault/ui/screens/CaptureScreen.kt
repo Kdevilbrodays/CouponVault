@@ -1,8 +1,15 @@
 package com.example.couponvault.ui.screens
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -15,6 +22,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,25 +42,26 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -71,13 +80,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.couponvault.ui.CouponViewModel
 import com.example.couponvault.ui.theme.EmeraldGreen
-import com.example.couponvault.ui.theme.RoseError
 import kotlinx.coroutines.delay
 import java.io.File
 
@@ -133,9 +142,36 @@ fun CameraPreviewContent(
     val isCapturing by viewModel.isCapturing.collectAsStateWithLifecycle()
     val captureFeedback by viewModel.captureFeedback.collectAsStateWithLifecycle()
     val lastCapturedImagePath by viewModel.lastCapturedImagePath.collectAsStateWithLifecycle()
+    val batchProgress by viewModel.batchProgress.collectAsStateWithLifecycle()
 
     var isTorchEnabled by remember { mutableStateOf(false) }
     var activeCamera by remember { mutableStateOf<Camera?>(null) }
+
+    var showDeleteGalleryOfferDialog by remember { mutableStateOf(false) }
+    var importedGalleryUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+
+    // Photo Picker launcher moved directly onto the camera-clicking screen
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importGalleryPhotos(context, uris) { completedUris ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && completedUris.isNotEmpty()) {
+                    importedGalleryUris = completedUris
+                    showDeleteGalleryOfferDialog = true
+                }
+            }
+        }
+    }
+
+    // MediaStore gallery delete launcher (Android 11+)
+    val galleryDeleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            Toast.makeText(context, "Deleted imported originals from gallery", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val imageCapture = remember {
         ImageCapture.Builder()
@@ -143,7 +179,7 @@ fun CameraPreviewContent(
             .build()
     }
 
-    // Auto-dismiss the feedback banner after 3 seconds
+    // Auto-dismiss the feedback banner after 3.2 seconds
     LaunchedEffect(captureFeedback) {
         if (captureFeedback != null) {
             delay(3200)
@@ -208,7 +244,7 @@ fun CameraPreviewContent(
             )
         }
 
-        // Top Bar: Back, Session Pill, Flash
+        // Top Bar: Back, Session Pill, Import button, Flash toggle
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -236,7 +272,7 @@ fun CameraPreviewContent(
             Surface(
                 shape = CircleShape,
                 color = Color.Black.copy(alpha = 0.6f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
@@ -258,24 +294,64 @@ fun CameraPreviewContent(
                 }
             }
 
-            // Torch Toggle
-            IconButton(
-                onClick = {
-                    val target = !isTorchEnabled
-                    activeCamera?.cameraControl?.enableTorch(target)
-                    isTorchEnabled = target
-                },
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.45f))
-                    .testTag("toggle_torch_button")
+            // Top-right actions: Import Button + Torch Toggle
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = if (isTorchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                    contentDescription = "Toggle flash",
-                    tint = if (isTorchEnabled) Color(0xFFFFEB3B) else Color.White
-                )
+                // Prominent Import Button on Camera Screen
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color.Black.copy(alpha = 0.6f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                        .testTag("camera_top_import_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AddPhotoAlternate,
+                            contentDescription = "Import Photos",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Import",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // Torch Toggle
+                IconButton(
+                    onClick = {
+                        val target = !isTorchEnabled
+                        activeCamera?.cameraControl?.enableTorch(target)
+                        isTorchEnabled = target
+                    },
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .testTag("toggle_torch_button")
+                ) {
+                    Icon(
+                        imageVector = if (isTorchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                        contentDescription = "Toggle flash",
+                        tint = if (isTorchEnabled) Color(0xFFFFEB3B) else Color.White
+                    )
+                }
             }
         }
 
@@ -322,7 +398,7 @@ fun CameraPreviewContent(
             }
         }
 
-        // Bottom Controls: Last photo thumb, Shutter button, Done button
+        // Bottom Controls: Gallery Import shortcut, Shutter button, Done button
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -336,34 +412,53 @@ fun CameraPreviewContent(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Last Captured Thumbnail Preview
-                Box(
+                // Interactive Gallery Import Shortcut Button
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .size(54.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.2f))
-                        .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center
+                        .clickable {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                        .testTag("gallery_import_shortcut")
                 ) {
-                    if (lastCapturedImagePath != null) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(File(lastCapturedImagePath!!))
-                                .crossfade(true)
-                                .size(108, 108)
-                                .build(),
-                            contentDescription = "Last captured photo",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.QrCode,
-                            contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.6f),
-                            modifier = Modifier.size(24.dp)
-                        )
+                    Box(
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White.copy(alpha = 0.2f))
+                            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (lastCapturedImagePath != null) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(File(lastCapturedImagePath!!))
+                                    .crossfade(true)
+                                    .size(108, 108)
+                                    .build(),
+                                contentDescription = "Last captured photo",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = "Import from gallery",
+                                tint = Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
                     }
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = "Import",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
 
                 // Large Shutter Button
@@ -411,6 +506,76 @@ fun CameraPreviewContent(
                 }
             }
         }
+    }
+
+    // Batch progress indicator modal during gallery import
+    batchProgress?.let { progress ->
+        Dialog(onDismissRequest = {}) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator(
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(44.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = progress.title,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    LinearProgressIndicator(
+                        progress = { if (progress.total > 0) progress.current.toFloat() / progress.total.toFloat() else 0f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "${progress.current} of ${progress.total}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+
+    // Gallery Delete Offer Dialog (Android 11+)
+    if (showDeleteGalleryOfferDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteGalleryOfferDialog = false },
+            title = { Text("Delete from Phone Gallery?") },
+            text = {
+                Text("All picked photos are now safely stored at full resolution inside CouponVault's private storage. Would you like to delete the originals from your phone's gallery so they don't clutter your photos?")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteGalleryOfferDialog = false
+                        val pendingIntent = viewModel.getGalleryDeletePendingIntent(context, importedGalleryUris)
+                        if (pendingIntent != null) {
+                            galleryDeleteLauncher.launch(
+                                IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                            )
+                        }
+                    }
+                ) {
+                    Text("Delete from Gallery", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteGalleryOfferDialog = false }) {
+                    Text("Keep in Gallery")
+                }
+            }
+        )
     }
 }
 
