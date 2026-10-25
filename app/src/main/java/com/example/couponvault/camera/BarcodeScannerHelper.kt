@@ -1,0 +1,49 @@
+package com.example.couponvault.camera
+
+import android.content.Context
+import android.net.Uri
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.io.File
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+object BarcodeScannerHelper {
+
+    // Configure QR code format only per Phase 1 specification
+    private val qrScannerOptions = BarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+        .build()
+
+    private val scanner = BarcodeScanning.getClient(qrScannerOptions)
+
+    /**
+     * Scans an image file for QR codes using the bundled offline ML Kit scanner.
+     * Returns a list of raw barcode string values found in the image.
+     */
+    suspend fun scanQrCodes(context: Context, imageFile: File): List<String> =
+        suspendCancellableCoroutine { continuation ->
+            try {
+                val inputImage = InputImage.fromFilePath(context, Uri.fromFile(imageFile))
+                scanner.process(inputImage)
+                    .addOnSuccessListener { barcodes ->
+                        val results = barcodes.mapNotNull { it.rawValue ?: it.displayValue }
+                        if (continuation.isActive) {
+                            continuation.resume(results)
+                        }
+                    }
+                    .addOnFailureListener { exception ->
+                        if (continuation.isActive) {
+                            continuation.resumeWithException(exception)
+                        }
+                    }
+            } catch (e: Exception) {
+                if (continuation.isActive) {
+                    continuation.resumeWithException(e)
+                }
+            }
+        }
+}

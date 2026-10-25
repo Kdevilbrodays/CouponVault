@@ -1,0 +1,6 @@
+{
+  "name": "CouponVault",
+  "description": "Private coupon photo vault with batch camera capture and offline Havells QR code extraction.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
