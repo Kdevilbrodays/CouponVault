@@ -80,9 +80,6 @@ import coil.request.ImageRequest
 import com.example.couponvault.data.Coupon
 import com.example.couponvault.data.CouponStatus
 import com.example.couponvault.ui.CouponViewModel
-import com.example.couponvault.ui.theme.AmberWarning
-import com.example.couponvault.ui.theme.AmberWarningContainer
-import com.example.couponvault.ui.theme.AmberWarningOnContainer
 import com.example.couponvault.ui.theme.EmeraldGreen
 import com.example.couponvault.ui.theme.RoseError
 import java.io.File
@@ -178,7 +175,7 @@ fun ReviewQueueScreen(
 
     // Form inputs
     var codeInput by remember(currentCoupon.id) {
-        mutableStateOf(currentCoupon.code ?: currentCoupon.ocrCode ?: "")
+        mutableStateOf(currentCoupon.code ?: "")
     }
     var errorMessage by remember(currentCoupon.id) { mutableStateOf<String?>(null) }
 
@@ -201,7 +198,7 @@ fun ReviewQueueScreen(
                                 fontSize = 18.sp
                             )
                             Text(
-                                text = "Verify code or read text under QR",
+                                text = "No code found. Type it from the printed text under the QR.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -236,56 +233,6 @@ fun ReviewQueueScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Discrepancy Alert Banner
-            if (currentCoupon.ocrCode != null && currentCoupon.code != null && currentCoupon.ocrCode != currentCoupon.code) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = AmberWarningContainer,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = AmberWarningOnContainer,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Discrepancy Detected",
-                                fontWeight = FontWeight.Bold,
-                                color = AmberWarningOnContainer,
-                                fontSize = 14.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "QR code and printed OCR text differ. Check image below:",
-                            fontSize = 12.sp,
-                            color = AmberWarningOnContainer
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = { codeInput = currentCoupon.code ?: "" },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Use QR: ${currentCoupon.code}", fontSize = 11.sp, maxLines = 1)
-                            }
-                            OutlinedButton(
-                                onClick = { codeInput = currentCoupon.ocrCode ?: "" },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Use OCR: ${currentCoupon.ocrCode}", fontSize = 11.sp, maxLines = 1)
-                            }
-                        }
-                    }
-                }
-            }
-
             // Large Zoomable Photo
             Card(
                 modifier = Modifier
@@ -378,7 +325,7 @@ fun ReviewQueueScreen(
                             if (errorMessage != null) {
                                 Text(errorMessage!!, color = MaterialTheme.colorScheme.error)
                             } else {
-                                Text("Type the code printed under the QR", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("No code found. Type it from the printed text under the QR.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         },
                         trailingIcon = {

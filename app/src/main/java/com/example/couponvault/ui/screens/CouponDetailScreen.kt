@@ -88,9 +88,6 @@ import com.example.couponvault.data.Coupon
 import com.example.couponvault.data.CouponStatus
 import com.example.couponvault.ui.CouponViewModel
 import com.example.couponvault.ui.components.StatusBadge
-import com.example.couponvault.ui.theme.AmberWarning
-import com.example.couponvault.ui.theme.AmberWarningContainer
-import com.example.couponvault.ui.theme.AmberWarningOnContainer
 import com.example.couponvault.ui.theme.EmeraldGreen
 import com.example.couponvault.ui.theme.RoseError
 import com.example.couponvault.util.StorageHelper
@@ -113,7 +110,7 @@ fun CouponDetailScreen(
 
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var isEditingCode by remember { mutableStateOf(false) }
-    var editedCodeInput by remember(coupon?.code) { mutableStateOf(coupon?.code ?: coupon?.ocrCode ?: "") }
+    var editedCodeInput by remember(coupon?.code) { mutableStateOf(coupon?.code ?: "") }
     var editErrorMessage by remember { mutableStateOf<String?>(null) }
 
     // Pinch-to-zoom transformation states
@@ -206,66 +203,6 @@ fun CouponDetailScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Discrepancy warning banner
-            if (coupon.ocrCode != null && coupon.code != null && coupon.ocrCode != coupon.code) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = AmberWarningContainer,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = AmberWarningOnContainer,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Code Discrepancy Flagged",
-                                fontWeight = FontWeight.Bold,
-                                color = AmberWarningOnContainer,
-                                fontSize = 14.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "QR decoded: ${coupon.code}\nOCR read: ${coupon.ocrCode}",
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = AmberWarningOnContainer
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.saveManualCode(coupon, coupon.ocrCode) { success, msg ->
-                                        if (success) {
-                                            coroutineScope.launch { snackbarHostState.showSnackbar("Switched to OCR code") }
-                                        }
-                                    }
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Switch to OCR Code", fontSize = 11.sp)
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.updateStatus(coupon, CouponStatus.UNSCANNED)
-                                    coroutineScope.launch { snackbarHostState.showSnackbar("Confirmed QR code") }
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Confirm QR Code", fontSize = 11.sp)
-                            }
-                        }
-                    }
-                }
-            }
-
             // Interactive Pinch-to-Zoom Full-Resolution Original Viewer
             Card(
                 modifier = Modifier
@@ -367,7 +304,7 @@ fun CouponDetailScreen(
                         TextButton(
                             onClick = {
                                 isEditingCode = !isEditingCode
-                                editedCodeInput = coupon.code ?: coupon.ocrCode ?: ""
+                                editedCodeInput = coupon.code ?: ""
                                 editErrorMessage = null
                             }
                         ) {
@@ -393,7 +330,7 @@ fun CouponDetailScreen(
                                 if (editErrorMessage != null) {
                                     Text(editErrorMessage!!, color = MaterialTheme.colorScheme.error)
                                 } else {
-                                    Text("Saving sets source=MANUAL and status=UNSCANNED")
+                                    Text("No code found. Type it from the printed text under the QR.")
                                 }
                             },
                             keyboardOptions = KeyboardOptions(

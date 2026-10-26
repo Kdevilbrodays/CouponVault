@@ -15,5 +15,5 @@ class Converters {
 
     @TypeConverter
     fun toSource(value: String?): CouponSource? =
-        value?.let { runCatching { CouponSource.valueOf(it) }.getOrDefault(CouponSource.QR) }
+        value?.let { runCatching { CouponSource.valueOf(it) }.getOrDefault(CouponSource.MANUAL) }
 }

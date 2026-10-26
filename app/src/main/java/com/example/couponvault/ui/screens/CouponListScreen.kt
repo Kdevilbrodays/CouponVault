@@ -10,10 +10,10 @@ import android.os.Build
 import android.widget.Toast
 import android.Manifest
 import android.content.pm.PackageManager
+import android.provider.MediaStore
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material3.Switch
@@ -32,6 +32,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -149,6 +151,10 @@ fun CouponListScreen(
     val captureFeedback by viewModel.captureFeedback.collectAsStateWithLifecycle()
     val batchProgress by viewModel.batchProgress.collectAsStateWithLifecycle()
 
+    val crashReport by viewModel.crashReport.collectAsStateWithLifecycle()
+    val showDeleteGalleryDialog by viewModel.showDeleteGalleryDialog.collectAsStateWithLifecycle()
+    val pendingDeleteUris by viewModel.pendingDeleteUris.collectAsStateWithLifecycle()
+
     val selectedCouponIds by viewModel.selectedCouponIds.collectAsStateWithLifecycle()
     val isSelectionMode by viewModel.isSelectionMode.collectAsStateWithLifecycle()
 
@@ -156,6 +162,22 @@ fun CouponListScreen(
     val isOverlayEnabled by viewModel.isOverlayEnabled.collectAsStateWithLifecycle()
     val isServiceRunning by viewModel.isServiceRunning.collectAsStateWithLifecycle()
     val autoMarkRedeemed by viewModel.autoMarkRedeemed.collectAsStateWithLifecycle()
+
+    // Document Picker launcher for gallery import (Android OpenMultipleDocuments)
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importGalleryPhotos(context, uris)
+        }
+    }
+
+    // MediaStore gallery delete launcher (Android 11+) declared at top level
+    val galleryDeleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.handleDeleteResult(result.resultCode)
+    }
 
     var showOverlayPermissionDialog by remember { mutableStateOf(false) }
     var pendingEnableOverlay by rememberSaveable { mutableStateOf(false) }
@@ -349,6 +371,14 @@ fun CouponListScreen(
                                     )
                                 }
                                 DropdownMenuItem(
+                                    text = { Text("Import Photos from Gallery") },
+                                    leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = null) },
+                                    onClick = {
+                                        showMenu = false
+                                        importLauncher.launch(arrayOf("image/*"))
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Export All Originals (SAF Folder)") },
                                     leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
                                     onClick = {
@@ -530,7 +560,7 @@ fun CouponListScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "$needsReviewCount coupons need review (OCR / unverified)",
+                                        text = "$needsReviewCount coupons need review",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = AmberWarningOnContainer
@@ -779,6 +809,98 @@ fun CouponListScreen(
                     }
                 ) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Crash Report Dialog
+    if (crashReport != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissCrashReport() },
+            title = { Text("The app crashed last time") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 280.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = crashReport ?: "",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 15.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "CouponVault Crash Report")
+                            putExtra(Intent.EXTRA_TEXT, crashReport)
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "Share Crash Report"))
+                        viewModel.dismissCrashReport()
+                    }
+                ) {
+                    Text("Share")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Crash Report", crashReport))
+                            Toast.makeText(context, "Crash report copied to clipboard", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Text("Copy")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    TextButton(onClick = { viewModel.dismissCrashReport() }) {
+                        Text("Dismiss")
+                    }
+                }
+            }
+        )
+    }
+
+    // Gallery Delete Offer Dialog (Android 11+)
+    if (showDeleteGalleryDialog && pendingDeleteUris.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissDeleteGalleryDialog() },
+            title = { Text("Delete from Phone Gallery?") },
+            text = {
+                val photoCount = pendingDeleteUris.size
+                val countText = if (photoCount == 1) "1 photo is" else "$photoCount photos are"
+                Text("$countText now safely stored at full resolution inside CouponVault's private storage. Would you like to delete the originals from your phone's gallery so they don't clutter your photos?")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && pendingDeleteUris.isNotEmpty()) {
+                            try {
+                                val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, pendingDeleteUris)
+                                val request = IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                                galleryDeleteLauncher.launch(request)
+                            } catch (e: Exception) {
+                                viewModel.onDeleteException(e)
+                            }
+                        } else {
+                            viewModel.dismissDeleteGalleryDialog()
+                        }
+                    }
+                ) {
+                    Text("Delete from Gallery", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissDeleteGalleryDialog() }) {
+                    Text("Keep in Gallery")
                 }
             }
         )

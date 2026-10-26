@@ -10,8 +10,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.couponvault.CouponVaultApplication
 import com.example.couponvault.camera.BarcodeScannerHelper
-import com.example.couponvault.camera.TextRecognitionHelper
 import com.example.couponvault.data.Coupon
 import com.example.couponvault.data.CouponRepository
 import com.example.couponvault.data.CouponSource
@@ -114,6 +114,40 @@ class CouponViewModel(
 
     private val _captureFeedback = MutableStateFlow<CaptureFeedback?>(null)
     val captureFeedback: StateFlow<CaptureFeedback?> = _captureFeedback.asStateFlow()
+
+    // Crash report state
+    private val _crashReport = MutableStateFlow<String?>(null)
+    val crashReport: StateFlow<String?> = _crashReport.asStateFlow()
+
+    // Pending gallery delete state
+    private val _pendingDeleteUris = MutableStateFlow<List<Uri>>(emptyList())
+    val pendingDeleteUris: StateFlow<List<Uri>> = _pendingDeleteUris.asStateFlow()
+
+    private val _showDeleteGalleryDialog = MutableStateFlow(false)
+    val showDeleteGalleryDialog: StateFlow<Boolean> = _showDeleteGalleryDialog.asStateFlow()
+
+    init {
+        checkForPreviousCrash()
+    }
+
+    private fun checkForPreviousCrash() {
+        try {
+            val crashFile = File(CouponVaultApplication.instance.filesDir, CouponVaultApplication.CRASH_FILE_NAME)
+            if (crashFile.exists()) {
+                val content = crashFile.readText()
+                crashFile.delete()
+                if (content.isNotBlank()) {
+                    _crashReport.value = content
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("CouponViewModel", "Failed to check last_crash.txt", e)
+        }
+    }
+
+    fun dismissCrashReport() {
+        _crashReport.value = null
+    }
 
     // Progress for Gallery Import & Folder Export
     private val _batchProgress = MutableStateFlow<BatchProgress?>(null)
@@ -265,14 +299,17 @@ class CouponViewModel(
     fun importGalleryPhotos(
         context: Context,
         uris: List<Uri>,
-        onFinished: (importedUris: List<Uri>) -> Unit
+        onFinished: (deletableUris: List<Uri>) -> Unit = {}
     ) {
         if (uris.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
+
+        // Run copy + DB insert in application-scoped coroutine so screen closures don't cancel it
+        CouponVaultApplication.instance.applicationScope.launch(Dispatchers.IO) {
             val total = uris.size
             var savedCount = 0
             var duplicateCount = 0
             var needsReviewCount = 0
+            val verifiedDeletableUris = mutableListOf<Uri>()
 
             _batchProgress.value = BatchProgress(current = 0, total = total, title = "Importing gallery photos...")
 
@@ -283,24 +320,70 @@ class CouponViewModel(
                     title = "Importing ${index + 1} of $total..."
                 )
                 try {
-                    val privateFile = StorageHelper.copyUriToPrivateOriginal(context, uri)
-                    val barcodes = BarcodeScannerHelper.scanBarcodesWithBounds(context, privateFile)
-                    val ocrCandidates = TextRecognitionHelper.recognizeTextCandidates(context, privateFile)
-                    val result = repository.processWithQrAndOcr(privateFile, barcodes, ocrCandidates)
+                    // 1. Convert to MediaStore URI if possible
+                    val mediaStoreUri = StorageHelper.convertToMediaStoreUri(context, uri)
 
+                    // 2. Query source byte size for verification
+                    val sourceByteSize = StorageHelper.getSourceByteSize(context, uri)
+
+                    // 3. Copy to private originals directory with UUID filename
+                    val privateFile = StorageHelper.copyUriToPrivateOriginal(context, uri)
+
+                    // 4. Verify private copy
+                    val copyVerified = StorageHelper.verifyCopy(context, uri, privateFile, sourceByteSize)
+                    if (!copyVerified) {
+                        android.util.Log.e("CouponViewModel", "Copy verification failed for URI $uri")
+                        if (privateFile.exists()) {
+                            privateFile.delete()
+                        }
+                        return@forEachIndexed
+                    }
+
+                    // 5. Scan barcodes and insert DB row
+                    val barcodes = BarcodeScannerHelper.scanBarcodesWithBounds(context, privateFile)
+                    val result = repository.processCouponPhoto(privateFile, barcodes)
+
+                    var isKeptOrDuplicateVerified = false
                     when (result) {
-                        is ProcessResult.Saved -> savedCount++
-                        is ProcessResult.SavedMultiple -> savedCount += result.codes.size
-                        is ProcessResult.AlreadySaved -> duplicateCount++
+                        is ProcessResult.Saved -> {
+                            savedCount++
+                            isKeptOrDuplicateVerified = true
+                        }
+                        is ProcessResult.SavedMultiple -> {
+                            savedCount += result.codes.size
+                            isKeptOrDuplicateVerified = true
+                        }
+                        is ProcessResult.AlreadySaved -> {
+                            duplicateCount++
+                            // Items reported as "already saved" count as verified if the existing copy is verified
+                            val existingCoupon = repository.getCouponById(result.existingCouponId)
+                            if (existingCoupon != null) {
+                                val existingFile = File(existingCoupon.imagePath)
+                                if (existingFile.exists() && existingFile.length() > 0L) {
+                                    isKeptOrDuplicateVerified = true
+                                }
+                            }
+                        }
                         is ProcessResult.Mixed -> {
                             savedCount += result.savedCodes.size
                             duplicateCount += result.duplicateCodes.size
+                            isKeptOrDuplicateVerified = true
                         }
-                        is ProcessResult.NoCodeFound -> needsReviewCount++
-                        is ProcessResult.Error -> {}
+                        is ProcessResult.NoCodeFound -> {
+                            needsReviewCount++
+                            isKeptOrDuplicateVerified = true
+                        }
+                        is ProcessResult.Error -> {
+                            android.util.Log.e("CouponViewModel", "Error processing coupon: ${result.message}")
+                        }
+                    }
+
+                    // Only offer deletion if copy is verified AND converted to MediaStore URI
+                    if (isKeptOrDuplicateVerified && mediaStoreUri != null) {
+                        verifiedDeletableUris.add(mediaStoreUri)
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    android.util.Log.e("CouponViewModel", "Failed to import photo from URI: $uri", e)
                 }
             }
 
@@ -319,13 +402,57 @@ class CouponViewModel(
             )
 
             withContext(Dispatchers.Main) {
-                onFinished(uris)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && verifiedDeletableUris.isNotEmpty()) {
+                    _pendingDeleteUris.value = verifiedDeletableUris
+                    _showDeleteGalleryDialog.value = true
+                } else if (uris.isNotEmpty()) {
+                    _captureFeedback.value = CaptureFeedback(
+                        message = "These photos can't be removed from the gallery automatically.",
+                        isSuccess = true,
+                        isWarning = true
+                    )
+                }
+                onFinished(verifiedDeletableUris)
             }
         }
     }
 
-    fun getGalleryDeletePendingIntent(context: Context, uris: List<Uri>): PendingIntent? {
-        return StorageHelper.createGalleryDeleteRequest(context.contentResolver, uris)
+    fun handleDeleteResult(resultCode: Int) {
+        val count = _pendingDeleteUris.value.size
+        _pendingDeleteUris.value = emptyList()
+        _showDeleteGalleryDialog.value = false
+
+        if (resultCode == android.app.Activity.RESULT_OK) {
+            val msg = if (count == 1) "Deleted 1 original from the gallery" else "Deleted $count originals from the gallery"
+            _captureFeedback.value = CaptureFeedback(
+                message = msg,
+                isSuccess = true
+            )
+        } else if (resultCode == android.app.Activity.RESULT_CANCELED) {
+            _captureFeedback.value = CaptureFeedback(
+                message = "Kept in gallery",
+                isSuccess = true
+            )
+        }
+    }
+
+    fun dismissDeleteGalleryDialog() {
+        _showDeleteGalleryDialog.value = false
+        _pendingDeleteUris.value = emptyList()
+        _captureFeedback.value = CaptureFeedback(
+            message = "Kept in gallery",
+            isSuccess = true
+        )
+    }
+
+    fun onDeleteException(e: Exception) {
+        android.util.Log.e("CouponViewModel", "Couldn't delete originals", e)
+        _pendingDeleteUris.value = emptyList()
+        _showDeleteGalleryDialog.value = false
+        _captureFeedback.value = CaptureFeedback(
+            message = "Couldn't delete originals",
+            isSuccess = false
+        )
     }
 
     // --- Export / Backup ---
@@ -372,8 +499,7 @@ class CouponViewModel(
     private suspend fun processSavedPhoto(context: Context, file: File) {
         try {
             val barcodes = BarcodeScannerHelper.scanBarcodesWithBounds(context, file)
-            val ocrCandidates = TextRecognitionHelper.recognizeTextCandidates(context, file)
-            val result = repository.processWithQrAndOcr(file, barcodes, ocrCandidates)
+            val result = repository.processCouponPhoto(file, barcodes)
 
             when (result) {
                 is ProcessResult.Saved -> {

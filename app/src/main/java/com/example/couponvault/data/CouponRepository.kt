@@ -1,10 +1,7 @@
 package com.example.couponvault.data
 
-import android.graphics.Rect
 import com.example.couponvault.camera.BarcodeItem
 import com.example.couponvault.util.CodeExtractor
-import com.example.couponvault.util.OcrCodeSelector
-import com.example.couponvault.util.OcrTokenCandidate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -87,28 +84,23 @@ class CouponRepository(private val couponDao: CouponDao) {
     }
 
     /**
-     * Full Phase 2 decode pipeline:
-     * - Decodes QR codes from image
-     * - If no QR found, runs OCR fallback to find token ^[A-Z0-9]{10,20}$
-     * - If both QR and OCR found and differ, keeps QR as code and flags NEEDS_REVIEW with ocrCode
-     * - Deduplicates against database
-     * - Cleans up duplicate image file if completely unreferenced
+     * QR decoding is the sole automatic extraction path:
+     * - Decodes QR code(s) from image.
+     * - If no QR found (or invalid), saves photo with status NEEDS_REVIEW,
+     *   empty code, and source = MANUAL.
+     * - Deduplicates against database.
+     * - Cleans up duplicate image file if completely unreferenced.
      */
-    suspend fun processWithQrAndOcr(
+    suspend fun processCouponPhoto(
         imageFile: File,
-        barcodes: List<BarcodeItem>,
-        ocrCandidates: List<OcrTokenCandidate>
+        barcodes: List<BarcodeItem>
     ): ProcessResult = withContext(Dispatchers.IO) {
         try {
             val validQrCodes = barcodes
                 .mapNotNull { item -> CodeExtractor.extractCode(item.rawValue) }
                 .distinct()
 
-            val primaryBarcodeBox = barcodes.firstOrNull()?.boundingBox
-            val bestOcrToken = OcrCodeSelector.selectBestOcrToken(ocrCandidates, primaryBarcodeBox)
-
             if (validQrCodes.isNotEmpty()) {
-                // QR code(s) found
                 val savedCodes = mutableListOf<String>()
                 val savedIds = mutableListOf<Long>()
                 val duplicateCodes = mutableListOf<String>()
@@ -120,17 +112,12 @@ class CouponRepository(private val couponDao: CouponDao) {
                         duplicateCodes.add(qrCode)
                         if (firstDuplicateId == null) firstDuplicateId = existing.id
                     } else {
-                        // Check for discrepancy between QR and OCR
-                        val hasDiscrepancy = bestOcrToken != null && bestOcrToken != qrCode
-                        val status = if (hasDiscrepancy) CouponStatus.NEEDS_REVIEW else CouponStatus.UNSCANNED
-
                         val coupon = Coupon(
                             code = qrCode,
                             imagePath = imageFile.absolutePath,
-                            status = status,
+                            status = CouponStatus.UNSCANNED,
                             source = CouponSource.QR,
-                            createdAt = System.currentTimeMillis(),
-                            ocrCode = bestOcrToken
+                            createdAt = System.currentTimeMillis()
                         )
                         val id = couponDao.insert(coupon)
                         savedCodes.add(qrCode)
@@ -162,39 +149,14 @@ class CouponRepository(private val couponDao: CouponDao) {
                     duplicateCodes = duplicateCodes,
                     highlightId = firstDuplicateId ?: savedIds.firstOrNull()
                 )
-            } else if (bestOcrToken != null) {
-                // No QR found, but OCR found a candidate token
-                val existing = couponDao.getCouponByCode(bestOcrToken)
-                if (existing != null) {
-                    val refCount = couponDao.countByImagePath(imageFile.absolutePath)
-                    if (refCount <= 0 && imageFile.exists()) {
-                        imageFile.delete()
-                    }
-                    return@withContext ProcessResult.AlreadySaved(
-                        code = bestOcrToken,
-                        existingCouponId = existing.id
-                    )
-                }
-
-                val coupon = Coupon(
-                    code = bestOcrToken,
-                    imagePath = imageFile.absolutePath,
-                    status = CouponStatus.NEEDS_REVIEW,
-                    source = CouponSource.OCR,
-                    createdAt = System.currentTimeMillis(),
-                    ocrCode = bestOcrToken
-                )
-                val newId = couponDao.insert(coupon)
-                return@withContext ProcessResult.Saved(bestOcrToken, newId)
             } else {
-                // Neither QR nor OCR found a valid coupon code
+                // No valid QR code found in photo
                 val coupon = Coupon(
                     code = null,
                     imagePath = imageFile.absolutePath,
                     status = CouponStatus.NEEDS_REVIEW,
-                    source = CouponSource.QR,
-                    createdAt = System.currentTimeMillis(),
-                    ocrCode = null
+                    source = CouponSource.MANUAL,
+                    createdAt = System.currentTimeMillis()
                 )
                 val newId = couponDao.insert(coupon)
                 return@withContext ProcessResult.NoCodeFound(newId)

@@ -7,9 +7,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -96,6 +96,23 @@ fun CaptureScreen(
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
+
+    // Document Picker launcher for importing photos (needs no storage permissions)
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importGalleryPhotos(context, uris)
+        }
+    }
+
+    // MediaStore gallery delete launcher (Android 11+) declared at top level of screen composable
+    val galleryDeleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.handleDeleteResult(result.resultCode)
+    }
+
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(
@@ -117,10 +134,31 @@ fun CaptureScreen(
         }
     }
 
+    val onLaunchImport: () -> Unit = {
+        importLauncher.launch(arrayOf("image/*"))
+    }
+
+    val onConfirmDelete: () -> Unit = {
+        val pendingUris = viewModel.pendingDeleteUris.value
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && pendingUris.isNotEmpty()) {
+            try {
+                val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, pendingUris)
+                val request = IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                galleryDeleteLauncher.launch(request)
+            } catch (e: Exception) {
+                viewModel.onDeleteException(e)
+            }
+        } else {
+            viewModel.dismissDeleteGalleryDialog()
+        }
+    }
+
     if (hasCameraPermission) {
         CameraPreviewContent(
             viewModel = viewModel,
-            onClose = onNavigateBack
+            onClose = onNavigateBack,
+            onLaunchImport = onLaunchImport,
+            onConfirmDelete = onConfirmDelete
         )
     } else {
         CameraPermissionRationale(
@@ -133,7 +171,9 @@ fun CaptureScreen(
 @Composable
 fun CameraPreviewContent(
     viewModel: CouponViewModel,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onLaunchImport: () -> Unit,
+    onConfirmDelete: () -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -144,34 +184,11 @@ fun CameraPreviewContent(
     val lastCapturedImagePath by viewModel.lastCapturedImagePath.collectAsStateWithLifecycle()
     val batchProgress by viewModel.batchProgress.collectAsStateWithLifecycle()
 
+    val showDeleteGalleryDialog by viewModel.showDeleteGalleryDialog.collectAsStateWithLifecycle()
+    val pendingDeleteUris by viewModel.pendingDeleteUris.collectAsStateWithLifecycle()
+
     var isTorchEnabled by remember { mutableStateOf(false) }
     var activeCamera by remember { mutableStateOf<Camera?>(null) }
-
-    var showDeleteGalleryOfferDialog by remember { mutableStateOf(false) }
-    var importedGalleryUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
-
-    // Photo Picker launcher moved directly onto the camera-clicking screen
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            viewModel.importGalleryPhotos(context, uris) { completedUris ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && completedUris.isNotEmpty()) {
-                    importedGalleryUris = completedUris
-                    showDeleteGalleryOfferDialog = true
-                }
-            }
-        }
-    }
-
-    // MediaStore gallery delete launcher (Android 11+)
-    val galleryDeleteLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            Toast.makeText(context, "Deleted imported originals from gallery", Toast.LENGTH_SHORT).show()
-        }
-    }
 
     val imageCapture = remember {
         ImageCapture.Builder()
@@ -306,11 +323,7 @@ fun CameraPreviewContent(
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        }
+                        .clickable { onLaunchImport() }
                         .testTag("camera_top_import_button")
                 ) {
                     Row(
@@ -417,11 +430,7 @@ fun CameraPreviewContent(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        }
+                        .clickable { onLaunchImport() }
                         .testTag("gallery_import_shortcut")
                 ) {
                     Box(
@@ -548,30 +557,24 @@ fun CameraPreviewContent(
     }
 
     // Gallery Delete Offer Dialog (Android 11+)
-    if (showDeleteGalleryOfferDialog) {
+    if (showDeleteGalleryDialog && pendingDeleteUris.isNotEmpty()) {
         AlertDialog(
-            onDismissRequest = { showDeleteGalleryOfferDialog = false },
+            onDismissRequest = { viewModel.dismissDeleteGalleryDialog() },
             title = { Text("Delete from Phone Gallery?") },
             text = {
-                Text("All picked photos are now safely stored at full resolution inside CouponVault's private storage. Would you like to delete the originals from your phone's gallery so they don't clutter your photos?")
+                val photoCount = pendingDeleteUris.size
+                val countText = if (photoCount == 1) "1 photo is" else "$photoCount photos are"
+                Text("$countText now safely stored at full resolution inside CouponVault's private storage. Would you like to delete the originals from your phone's gallery so they don't clutter your photos?")
             },
             confirmButton = {
                 Button(
-                    onClick = {
-                        showDeleteGalleryOfferDialog = false
-                        val pendingIntent = viewModel.getGalleryDeletePendingIntent(context, importedGalleryUris)
-                        if (pendingIntent != null) {
-                            galleryDeleteLauncher.launch(
-                                IntentSenderRequest.Builder(pendingIntent.intentSender).build()
-                            )
-                        }
-                    }
+                    onClick = onConfirmDelete
                 ) {
                     Text("Delete from Gallery", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteGalleryOfferDialog = false }) {
+                TextButton(onClick = { viewModel.dismissDeleteGalleryDialog() }) {
                     Text("Keep in Gallery")
                 }
             }

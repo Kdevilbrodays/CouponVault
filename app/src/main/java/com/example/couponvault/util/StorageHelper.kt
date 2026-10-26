@@ -18,9 +18,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import android.content.ContentUris
+import android.provider.OpenableColumns
+import android.util.Log
 
 object StorageHelper {
     private const val DIRECTORY_NAME = "originals"
+    private const val TAG = "StorageHelper"
 
     /**
      * Returns the private directory in context.filesDir/originals/
@@ -34,36 +38,160 @@ object StorageHelper {
     }
 
     /**
-     * Generates a new file path for saving a full-resolution original JPEG.
+     * Generates a new file path with a unique UUID for saving a full-resolution original JPEG.
+     * Uses UUIDs so photos imported in the same millisecond cannot overwrite each other.
      */
     fun createOriginalFile(context: Context): File {
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        val randomSuffix = UUID.randomUUID().toString().take(6)
-        val fileName = "coupon_${timestamp}_$randomSuffix.jpg"
+        val fileName = "coupon_${UUID.randomUUID()}.jpg"
         return File(getOriginalsDirectory(context), fileName)
     }
 
     /**
-     * Copies an image from a content Uri (e.g. system Photo Picker) into private filesDir/originals/
+     * Converts a content URI (such as a document URI from OpenMultipleDocuments)
+     * to a MediaStore URI suitable for MediaStore.createDeleteRequest().
+     *
+     * Handles:
+     * - Direct MediaStore URIs (authority is MediaStore.AUTHORITY or media images)
+     * - API 31+ MediaStore.getMediaUri()
+     * - Document provider URIs (authority "com.android.providers.media.documents")
+     *   with document ID format "image:<id>"
+     * Returns null if the URI cannot be converted.
      */
-    fun copyUriToPrivateOriginal(context: Context, sourceUri: Uri): File {
-        val targetFile = createOriginalFile(context)
-        context.contentResolver.openInputStream(sourceUri)?.use { input ->
-            FileOutputStream(targetFile).use { output ->
-                input.copyTo(output)
+    fun convertToMediaStoreUri(context: Context, uri: Uri): Uri? {
+        // If it's already a MediaStore URI
+        if (uri.authority == MediaStore.AUTHORITY || (uri.authority == "media" && uri.path?.contains("images") == true)) {
+            return uri
+        }
+
+        // On API 31+, try MediaStore.getMediaUri
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val mediaUri = MediaStore.getMediaUri(context, uri)
+                if (mediaUri != null) {
+                    return mediaUri
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaStore.getMediaUri failed for $uri", e)
             }
-        } ?: error("Unable to open picked image stream")
-        return targetFile
+        }
+
+        // Document provider fallback
+        if (uri.authority == "com.android.providers.media.documents") {
+            try {
+                val docId = DocumentsContract.getDocumentId(uri)
+                val idPart = if (docId.contains(":")) {
+                    docId.substringAfter(":")
+                } else {
+                    docId
+                }
+                val mediaId = idPart.toLongOrNull()
+                if (mediaId != null) {
+                    return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, mediaId)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "DocumentsContract.getDocumentId failed for $uri", e)
+            }
+        }
+
+        return null
     }
 
     /**
-     * Creates a delete request for gallery originals on Android 11+ (API 30+)
-     * Returns a PendingIntent to show the system confirmation dialog.
+     * Queries the byte size of a content URI via AssetFileDescriptor or OpenableColumns.
+     */
+    fun getSourceByteSize(context: Context, uri: Uri): Long? {
+        try {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+                val len = afd.length
+                if (len > 0L && len != android.content.res.AssetFileDescriptor.UNKNOWN_LENGTH) {
+                    return len
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed openAssetFileDescriptor for $uri", e)
+        }
+
+        try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (sizeIndex != -1 && !cursor.isNull(sizeIndex)) {
+                        val size = cursor.getLong(sizeIndex)
+                        if (size > 0L) return size
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed query OpenableColumns.SIZE for $uri", e)
+        }
+
+        return null
+    }
+
+    /**
+     * Verifies that the private copy exists in filesDir/originals and its byte size matches the expected size.
+     */
+    fun verifyCopy(destinationFile: File, expectedByteSize: Long?): Boolean {
+        if (!destinationFile.exists() || !destinationFile.isFile) {
+            return false
+        }
+        val destSize = destinationFile.length()
+        if (destSize <= 0L) {
+            return false
+        }
+        if (expectedByteSize != null && destSize != expectedByteSize) {
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Overload to verify copy using context and source URI.
+     */
+    fun verifyCopy(context: Context, sourceUri: Uri, destinationFile: File, cachedSourceSize: Long? = null): Boolean {
+        val expectedSize = cachedSourceSize ?: getSourceByteSize(context, sourceUri)
+        return verifyCopy(destinationFile, expectedSize)
+    }
+
+    /**
+     * Copies an image from a content Uri into private filesDir/originals/ using a UUID filename.
+     * Verifies byte size after copy; deletes the file and throws an exception on mismatch.
+     */
+    fun copyUriToPrivateOriginal(context: Context, sourceUri: Uri): File {
+        val targetFile = createOriginalFile(context)
+        try {
+            val bytesWritten = context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                FileOutputStream(targetFile).use { output ->
+                    input.copyTo(output)
+                }
+            } ?: error("Unable to open input stream for $sourceUri")
+
+            if (!targetFile.exists() || targetFile.length() <= 0L || targetFile.length() != bytesWritten) {
+                targetFile.delete()
+                error("File copy verification failed for $sourceUri: size mismatch or empty")
+            }
+            return targetFile
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy $sourceUri to private storage", e)
+            if (targetFile.exists()) {
+                targetFile.delete()
+            }
+            throw e
+        }
+    }
+
+    /**
+     * Creates a delete request for gallery originals on Android 11+ (API 30+).
+     * Guards against empty lists, API < 30, and catches any MediaStore exceptions.
      */
     fun createGalleryDeleteRequest(contentResolver: ContentResolver, uris: List<Uri>): PendingIntent? {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (uris.isEmpty() || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return null
+        }
+        return try {
             MediaStore.createDeleteRequest(contentResolver, uris)
-        } else {
+        } catch (e: Exception) {
+            Log.e(TAG, "MediaStore.createDeleteRequest failed", e)
             null
         }
     }
