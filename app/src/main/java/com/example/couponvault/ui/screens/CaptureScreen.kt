@@ -1,12 +1,10 @@
 package com.example.couponvault.ui.screens
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.widget.Toast
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -42,7 +40,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -52,6 +49,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -77,6 +75,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview as ComposePreview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -86,7 +85,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.couponvault.ui.CouponViewModel
-import com.example.couponvault.ui.theme.EmeraldGreen
+import com.example.couponvault.ui.theme.BrickError
+import com.example.couponvault.ui.theme.ButtonShape
+import com.example.couponvault.ui.theme.CardShape
+import com.example.couponvault.ui.theme.CouponVaultTheme
+import com.example.couponvault.ui.theme.FieldShape
+import com.example.couponvault.ui.theme.PillShape
+import com.example.couponvault.ui.theme.PrimaryClay
+import com.example.couponvault.ui.theme.StatusNeedsReviewText
+import com.example.couponvault.ui.theme.StatusRedeemedText
+import com.example.couponvault.ui.theme.TitleFontFamily
+import com.example.couponvault.ui.theme.UiFontFamily
 import kotlinx.coroutines.delay
 import java.io.File
 
@@ -196,10 +205,10 @@ fun CameraPreviewContent(
             .build()
     }
 
-    // Auto-dismiss the feedback banner after 3.2 seconds
+    // Auto-dismiss the feedback banner after 2.8 seconds
     LaunchedEffect(captureFeedback) {
         if (captureFeedback != null) {
-            delay(3200)
+            delay(2800)
             viewModel.dismissFeedback()
         }
     }
@@ -243,7 +252,7 @@ fun CameraPreviewContent(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Overlay reticle guide
+        // Overlay reticle guide: Hairline paper frame with generous breathing room
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -254,26 +263,28 @@ fun CameraPreviewContent(
                 modifier = Modifier
                     .size(280.dp)
                     .border(
-                        width = 2.dp,
-                        color = Color.White.copy(alpha = 0.5f),
+                        width = 1.dp,
+                        color = Color.White.copy(alpha = 0.45f),
                         shape = RoundedCornerShape(16.dp)
                     )
             )
         }
 
-        // Top Bar: Back, Session Pill, Import button, Flash toggle
+        // Top Bar: Tidy row with Close, Session counter pill, Torch toggle.
+        // Generous spacing between elements so pills NEVER touch each other.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Close button (48dp touch target)
             IconButton(
                 onClick = onClose,
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.45f))
                     .testTag("close_camera_button")
@@ -281,142 +292,111 @@ fun CameraPreviewContent(
                 Icon(
                     imageVector = Icons.Default.Close,
                     contentDescription = "Close camera",
-                    tint = Color.White
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
                 )
             }
 
-            // Running Session Counter
+            // Running Session Counter: quiet paper pill
             Surface(
-                shape = CircleShape,
-                color = Color.Black.copy(alpha = 0.6f),
+                shape = PillShape,
+                color = Color.Black.copy(alpha = 0.55f),
                 border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(8.dp)
+                            .size(7.dp)
                             .clip(CircleShape)
-                            .background(EmeraldGreen)
+                            .background(PrimaryClay)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = if (sessionCount == 1) "1 photo taken" else "$sessionCount photos taken",
                         color = Color.White,
                         fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
 
-            // Top-right actions: Import Button + Torch Toggle
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // Torch Toggle (48dp touch target)
+            IconButton(
+                onClick = {
+                    val target = !isTorchEnabled
+                    activeCamera?.cameraControl?.enableTorch(target)
+                    isTorchEnabled = target
+                },
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .testTag("toggle_torch_button")
             ) {
-                // Prominent Import Button on Camera Screen
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color.Black.copy(alpha = 0.6f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { onLaunchImport() }
-                        .testTag("camera_top_import_button")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AddPhotoAlternate,
-                            contentDescription = "Import Photos",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Import",
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                // Torch Toggle
-                IconButton(
-                    onClick = {
-                        val target = !isTorchEnabled
-                        activeCamera?.cameraControl?.enableTorch(target)
-                        isTorchEnabled = target
-                    },
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.45f))
-                        .testTag("toggle_torch_button")
-                ) {
-                    Icon(
-                        imageVector = if (isTorchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                        contentDescription = "Toggle flash",
-                        tint = if (isTorchEnabled) Color(0xFFFFEB3B) else Color.White
-                    )
-                }
+                Icon(
+                    imageVector = if (isTorchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                    contentDescription = "Toggle flash",
+                    tint = if (isTorchEnabled) Color(0xFFFFCC00) else Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
             }
         }
 
-        // Floating feedback banner
+        // Bottom-anchored quiet paper snackbar: Never covers the center of the camera preview
         AnimatedVisibility(
             visible = captureFeedback != null,
-            enter = slideInVertically { -it } + fadeIn(),
-            exit = slideOutVertically { -it } + fadeOut(),
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(top = 70.dp, start = 20.dp, end = 20.dp)
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 110.dp, start = 24.dp, end = 24.dp)
         ) {
             captureFeedback?.let { feedback ->
-                val bg = when {
-                    feedback.isSuccess && !feedback.isWarning -> Color(0xFF0F5132)
-                    feedback.isWarning -> Color(0xFF664D03)
-                    else -> Color(0xFF842029)
-                }
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = bg,
-                    shadowElevation = 8.dp
+                    shape = FieldShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    shadowElevation = 4.dp
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val iconTint = when {
+                            feedback.isSuccess && !feedback.isWarning -> StatusRedeemedText
+                            feedback.isWarning -> StatusNeedsReviewText
+                            else -> BrickError
+                        }
                         Icon(
                             imageVector = if (feedback.isSuccess && !feedback.isWarning) Icons.Default.Check else Icons.Default.Info,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = iconTint,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = feedback.message,
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontFamily = UiFontFamily,
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
             }
         }
 
-        // Bottom Controls: Gallery Import shortcut, Shutter button, Done button
+        // Bottom Controls: Single Gallery Import shortcut, Ivory Shutter with Clay Center, Readable Done button
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.5f))
+                .background(Color.Black.copy(alpha = 0.55f))
                 .navigationBarsPadding()
                 .padding(horizontal = 24.dp, vertical = 20.dp)
         ) {
@@ -425,20 +405,21 @@ fun CameraPreviewContent(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Interactive Gallery Import Shortcut Button
+                // Single Gallery Import Shortcut Button (48dp touch target)
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(FieldShape)
                         .clickable { onLaunchImport() }
+                        .padding(4.dp)
                         .testTag("gallery_import_shortcut")
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(54.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.2f))
-                            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
+                            .size(48.dp)
+                            .clip(FieldShape)
+                            .background(Color.White.copy(alpha = 0.15f))
+                            .border(1.dp, Color.White.copy(alpha = 0.35f), FieldShape),
                         contentAlignment = Alignment.Center
                     ) {
                         if (lastCapturedImagePath != null) {
@@ -446,7 +427,7 @@ fun CameraPreviewContent(
                                 model = ImageRequest.Builder(context)
                                     .data(File(lastCapturedImagePath!!))
                                     .crossfade(true)
-                                    .size(108, 108)
+                                    .size(96, 96)
                                     .build(),
                                 contentDescription = "Last captured photo",
                                 contentScale = ContentScale.Crop,
@@ -456,29 +437,33 @@ fun CameraPreviewContent(
                             Icon(
                                 imageVector = Icons.Default.PhotoLibrary,
                                 contentDescription = "Import from gallery",
-                                tint = Color.White.copy(alpha = 0.85f),
-                                modifier = Modifier.size(26.dp)
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(3.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "Import",
                         color = Color.White.copy(alpha = 0.9f),
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Medium
                     )
                 }
 
-                // Large Shutter Button
+                // Shutter Button: Ivory ring with Clay center
                 Box(
                     modifier = Modifier
                         .size(80.dp)
                         .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.3f))
+                        .background(Color(0xFFFBF9F4)) // Ivory outer ring
                         .padding(5.dp)
                         .clip(CircleShape)
-                        .background(Color.White)
+                        .background(Color(0xFF1F1D1A)) // Thin separator ring
+                        .padding(3.dp)
+                        .clip(CircleShape)
+                        .background(PrimaryClay) // Clay center
                         .clickable(enabled = !isCapturing) {
                             viewModel.capturePhoto(context, imageCapture)
                         }
@@ -487,30 +472,30 @@ fun CameraPreviewContent(
                 ) {
                     if (isCapturing) {
                         CircularProgressIndicator(
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(36.dp),
-                            strokeWidth = 3.dp
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .size(62.dp)
-                                .clip(CircleShape)
-                                .border(3.dp, Color.Black.copy(alpha = 0.15f), CircleShape)
-                                .background(Color.White)
+                            color = Color.White,
+                            modifier = Modifier.size(28.dp),
+                            strokeWidth = 2.5.dp
                         )
                     }
                 }
 
-                // Done Button (Finish Batch and View List)
+                // Readable "Done" Button: High-contrast Ivory paper button with dark text
                 Button(
                     onClick = onClose,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.testTag("done_batch_button")
+                    shape = ButtonShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFBF9F4),
+                        contentColor = Color(0xFF1F1D1A)
+                    ),
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("done_batch_button")
                 ) {
                     Text(
                         text = "Done",
-                        fontWeight = FontWeight.Bold
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
                     )
                 }
             }
@@ -521,9 +506,10 @@ fun CameraPreviewContent(
     batchProgress?.let { progress ->
         Dialog(onDismissRequest = {}) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = CardShape,
                 color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                shadowElevation = 6.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -532,23 +518,29 @@ fun CameraPreviewContent(
                 ) {
                     CircularProgressIndicator(
                         strokeWidth = 3.dp,
-                        modifier = Modifier.size(44.dp)
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = progress.title,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
+                        fontFamily = TitleFontFamily,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     LinearProgressIndicator(
                         progress = { if (progress.total > 0) progress.current.toFloat() / progress.total.toFloat() else 0f },
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "${progress.current} of ${progress.total}",
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
+                        fontFamily = UiFontFamily,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -556,28 +548,60 @@ fun CameraPreviewContent(
         }
     }
 
-    // Gallery Delete Offer Dialog (Android 11+)
+    // Gallery Delete Offer Dialog (Defect #9):
+    // Standard AlertDialog: serif title, 2-3 line body, right-aligned row with [Keep] as text button and [Delete] as filled brick-tone button.
     if (showDeleteGalleryDialog && pendingDeleteUris.isNotEmpty()) {
+        val photoCount = pendingDeleteUris.size
+        val countText = if (photoCount == 1) "1 photo has" else "$photoCount photos have"
         AlertDialog(
             onDismissRequest = { viewModel.dismissDeleteGalleryDialog() },
-            title = { Text("Delete from Phone Gallery?") },
+            title = {
+                Text(
+                    text = "Delete from phone gallery?",
+                    fontFamily = TitleFontFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 20.sp
+                )
+            },
             text = {
-                val photoCount = pendingDeleteUris.size
-                val countText = if (photoCount == 1) "1 photo is" else "$photoCount photos are"
-                Text("$countText now safely stored at full resolution inside CouponVault's private storage. Would you like to delete the originals from your phone's gallery so they don't clutter your photos?")
+                Text(
+                    text = "$countText been saved privately in CouponVault. Delete the originals from your gallery to free up space?",
+                    fontFamily = UiFontFamily,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 20.sp
+                )
             },
             confirmButton = {
                 Button(
-                    onClick = onConfirmDelete
+                    onClick = onConfirmDelete,
+                    shape = ButtonShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = BrickError,
+                        contentColor = Color.White
+                    )
                 ) {
-                    Text("Delete from Gallery", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "Delete",
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissDeleteGalleryDialog() }) {
-                    Text("Keep in Gallery")
+                TextButton(
+                    onClick = { viewModel.dismissDeleteGalleryDialog() },
+                    shape = ButtonShape
+                ) {
+                    Text(
+                        text = "Keep",
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
-            }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = CardShape
         )
     }
 }
@@ -591,6 +615,8 @@ fun CameraPermissionRationale(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -600,33 +626,37 @@ fun CameraPermissionRationale(
         ) {
             Box(
                 modifier = Modifier
-                    .size(90.dp)
+                    .size(72.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.Camera,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(44.dp)
+                    modifier = Modifier.size(36.dp)
                 )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
 
             Text(
-                text = "Camera Access Required",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
+                text = "Camera Access",
+                fontFamily = TitleFontFamily,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 24.sp,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onBackground
             )
 
             Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = "CouponVault captures and stores coupon photos privately in internal storage without cluttering your phone's gallery. The camera stays open so you can capture coupons in rapid succession.",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "CouponVault saves coupon photos privately on your device. The camera stays open so you can capture coupons quickly.",
+                fontFamily = UiFontFamily,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(horizontal = 16.dp)
@@ -636,14 +666,16 @@ fun CameraPermissionRationale(
 
             Button(
                 onClick = onRequestPermission,
+                shape = ButtonShape,
                 modifier = Modifier
-                    .fillMaxWidth(0.8f)
-                    .height(50.dp)
+                    .fillMaxWidth()
+                    .height(48.dp)
                     .testTag("grant_permission_button")
             ) {
                 Text(
-                    text = "Grant Camera Permission",
-                    fontWeight = FontWeight.Bold
+                    text = "Allow camera",
+                    fontFamily = UiFontFamily,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
 
@@ -651,10 +683,34 @@ fun CameraPermissionRationale(
 
             OutlinedButton(
                 onClick = onClose,
-                modifier = Modifier.fillMaxWidth(0.8f)
+                shape = ButtonShape,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
             ) {
-                Text("Back to Coupons")
+                Text(
+                    text = "Back to coupons",
+                    fontFamily = UiFontFamily,
+                    fontWeight = FontWeight.Medium
+                )
             }
         }
+    }
+}
+
+@ComposePreview(name = "Capture Rationale - Light 360dp", widthDp = 360, fontScale = 1.3f)
+@Composable
+private fun CaptureRationalePreviewLight() {
+    CouponVaultTheme(darkTheme = false) {
+        CameraPermissionRationale(onRequestPermission = {}, onClose = {})
+    }
+}
+
+@ComposePreview(name = "Capture Rationale - Dark 360dp", widthDp = 360, fontScale = 1.3f)
+@Composable
+private fun CaptureRationalePreviewDark() {
+    CouponVaultTheme(darkTheme = true) {
+        CameraPermissionRationale(onRequestPermission = {}, onClose = {})
     }
 }

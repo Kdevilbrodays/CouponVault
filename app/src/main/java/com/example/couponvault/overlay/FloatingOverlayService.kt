@@ -80,7 +80,7 @@ class FloatingOverlayService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var pillTextView: TextView? = null
-    private var pillIconView: ImageView? = null
+    private var pillBadgeView: TextView? = null
     private var pillContainer: LinearLayout? = null
 
     private var currentQueueState = QueueState()
@@ -223,36 +223,48 @@ class FloatingOverlayService : Service() {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dpToPx(12f), dpToPx(8f), dpToPx(14f), dpToPx(8f))
+            setPadding(dpToPx(14f), dpToPx(7f), dpToPx(10f), dpToPx(7f))
 
             background = GradientDrawable().apply {
-                setColor(0xEE1E293B.toInt()) // Deep slate navy
+                setColor(0xFFFBF9F4.toInt()) // Solid ivory paper
                 cornerRadius = dpToPx(24f).toFloat()
-                setStroke(dpToPx(1.5f), 0x8860A5FA.toInt()) // Electric light blue border
+                setStroke(dpToPx(1f), 0xFFDDD8C8.toInt()) // Hairline paper border
             }
-            elevation = dpToPx(8f).toFloat()
+            elevation = dpToPx(4f).toFloat() // Soft shadow
         }
         pillContainer = container
 
-        val iconView = ImageView(this).apply {
-            setImageResource(android.R.drawable.ic_menu_save)
-            setColorFilter(0xFF60A5FA.toInt())
-            layoutParams = LinearLayout.LayoutParams(dpToPx(18f), dpToPx(18f)).apply {
-                marginEnd = dpToPx(8f)
-            }
-        }
-        pillIconView = iconView
-        container.addView(iconView)
-
         val textView = TextView(this).apply {
-            setTextColor(Color.WHITE)
+            setTextColor(0xFF1F1D1A.toInt()) // Dark text
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
-            text = "Loading…"
+            text = "Ready"
             maxLines = 1
         }
         pillTextView = textView
         container.addView(textView)
+
+        val badgeView = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTypeface(android.graphics.Typeface.SANS_SERIF, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(dpToPx(7f), dpToPx(2f), dpToPx(7f), dpToPx(2f))
+            background = GradientDrawable().apply {
+                setColor(0xFFB5532F.toInt()) // Clay accent
+                cornerRadius = dpToPx(12f).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginStart = dpToPx(8f)
+            }
+            text = "0"
+            maxLines = 1
+        }
+        pillBadgeView = badgeView
+        container.addView(badgeView)
 
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -343,10 +355,12 @@ class FloatingOverlayService : Service() {
 
     private fun updateOverlayUI(state: QueueState) {
         val textView = pillTextView ?: return
+        val badgeView = pillBadgeView ?: return
+
         if (state.isAllDone) {
-            textView.text = "All done"
-            pillIconView?.setImageResource(android.R.drawable.checkbox_on_background)
-            pillIconView?.setColorFilter(0xFF10B981.toInt())
+            textView.text = "All redeemed"
+            badgeView.text = "✓"
+            (badgeView.background as? GradientDrawable)?.setColor(0xFF3F5A2E.toInt())
         } else {
             val rawCode = state.currentCode
             val shortened = if (rawCode != null) {
@@ -355,10 +369,9 @@ class FloatingOverlayService : Service() {
                 } else rawCode
             } else "Next"
 
-            val countText = "${state.remainingCount} left"
-            textView.text = "$shortened · $countText"
-            pillIconView?.setImageResource(android.R.drawable.ic_menu_save)
-            pillIconView?.setColorFilter(0xFF60A5FA.toInt())
+            textView.text = shortened
+            badgeView.text = "${state.remainingCount}"
+            (badgeView.background as? GradientDrawable)?.setColor(0xFFB5532F.toInt())
         }
     }
 
@@ -375,20 +388,18 @@ class FloatingOverlayService : Service() {
         val container = pillContainer ?: return
         val originalBg = container.background
 
-        // Flash green
+        // Flash warm clay container feedback
         val flashBg = GradientDrawable().apply {
-            setColor(0xEE065F46.toInt()) // Deep emerald
+            setColor(0xFFF1DFD2.toInt())
             cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics)
-            setStroke(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1.5f, resources.displayMetrics).toInt(), 0xFF34D399.toInt())
+            setStroke(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1.5f, resources.displayMetrics).toInt(), 0xFFB5532F.toInt())
         }
         container.background = flashBg
-        pillIconView?.setImageResource(android.R.drawable.checkbox_on_background)
-        pillIconView?.setColorFilter(0xFF34D399.toInt())
 
         mainHandler.postDelayed({
             container.background = originalBg
             updateOverlayUI(currentQueueState)
-        }, 300)
+        }, 250)
     }
 
     private fun triggerHapticFeedback() {

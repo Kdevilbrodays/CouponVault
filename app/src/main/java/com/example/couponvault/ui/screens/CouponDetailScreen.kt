@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,21 +37,19 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -75,21 +75,39 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.couponvault.data.Coupon
+import com.example.couponvault.data.CouponSource
 import com.example.couponvault.data.CouponStatus
 import com.example.couponvault.ui.CouponViewModel
 import com.example.couponvault.ui.components.StatusBadge
-import com.example.couponvault.ui.theme.EmeraldGreen
-import com.example.couponvault.ui.theme.RoseError
+import com.example.couponvault.ui.theme.BrickError
+import com.example.couponvault.ui.theme.ButtonShape
+import com.example.couponvault.ui.theme.CardShape
+import com.example.couponvault.ui.theme.CodeFontFamily
+import com.example.couponvault.ui.theme.CouponVaultTheme
+import com.example.couponvault.ui.theme.FieldShape
+import com.example.couponvault.ui.theme.PillShape
+import com.example.couponvault.ui.theme.PrimaryClay
+import com.example.couponvault.ui.theme.StatusFailedBg
+import com.example.couponvault.ui.theme.StatusFailedText
+import com.example.couponvault.ui.theme.StatusNeedsReviewBg
+import com.example.couponvault.ui.theme.StatusNeedsReviewText
+import com.example.couponvault.ui.theme.StatusRedeemedBg
+import com.example.couponvault.ui.theme.StatusRedeemedText
+import com.example.couponvault.ui.theme.StatusUnscannedBg
+import com.example.couponvault.ui.theme.StatusUnscannedText
+import com.example.couponvault.ui.theme.TitleFontFamily
+import com.example.couponvault.ui.theme.UiFontFamily
 import com.example.couponvault.util.StorageHelper
 import kotlinx.coroutines.launch
 import java.io.File
@@ -121,12 +139,21 @@ fun CouponDetailScreen(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Coupon Detail") },
+                    title = {
+                        Text(
+                            text = "Coupon",
+                            fontFamily = TitleFontFamily,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    },
                     navigationIcon = {
                         IconButton(onClick = onNavigateBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
-                    }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background
+                    )
                 )
             }
         ) { padding ->
@@ -136,7 +163,11 @@ fun CouponDetailScreen(
                     .padding(padding),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Coupon not found or already deleted.")
+                Text(
+                    text = "Coupon not found.",
+                    fontFamily = UiFontFamily,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
         return
@@ -146,20 +177,24 @@ fun CouponDetailScreen(
         modifier = Modifier
             .fillMaxSize()
             .testTag("coupon_detail_screen"),
+        containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
                     Column {
                         Text(
-                            text = coupon.code ?: "Coupon Review",
-                            fontWeight = FontWeight.Bold,
+                            text = coupon.code ?: "Coupon",
+                            fontFamily = if (coupon.code != null) CodeFontFamily else TitleFontFamily,
+                            fontWeight = FontWeight.SemiBold,
                             fontSize = 18.sp,
-                            fontFamily = if (coupon.code != null) FontFamily.Monospace else FontFamily.Default
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = "Private storage",
-                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = UiFontFamily,
+                            fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -169,7 +204,11 @@ fun CouponDetailScreen(
                         onClick = onNavigateBack,
                         modifier = Modifier.testTag("detail_back_button")
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onBackground
+                        )
                     }
                 },
                 actions = {
@@ -180,17 +219,15 @@ fun CouponDetailScreen(
                         },
                         modifier = Modifier.testTag("share_original_button")
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = "Share original")
-                    }
-                    IconButton(
-                        onClick = { showDeleteConfirmDialog = true },
-                        modifier = Modifier.testTag("delete_coupon_button")
-                    ) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete coupon", tint = RoseError)
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = "Share photo",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = MaterialTheme.colorScheme.background
                 )
             )
         }
@@ -200,28 +237,31 @@ fun CouponDetailScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Interactive Pinch-to-Zoom Full-Resolution Original Viewer
+            // Photo on paper mat with hairline frame
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(340.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.Black)
+                    .height(300.dp),
+                shape = CardShape,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(16.dp))
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color.Black.copy(alpha = 0.05f))
                 ) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(File(coupon.imagePath))
                             .crossfade(true)
                             .build(),
-                        contentDescription = "Full-resolution original coupon photo",
+                        contentDescription = "Coupon photo",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxSize()
@@ -244,56 +284,41 @@ fun CouponDetailScreen(
                             )
                     )
 
-                    // Zoom indicator / Reset zoom pill
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(12.dp)
-                    ) {
+                    // Zoom reset indicator
+                    if (scale > 1.05f) {
                         Surface(
-                            shape = CircleShape,
-                            color = Color.Black.copy(alpha = 0.65f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "${String.format("%.1f", scale)}x",
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                if (scale > 1.05f) {
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Reset",
-                                        color = MaterialTheme.colorScheme.primary,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.clickable {
-                                            scale = 1f
-                                            offset = Offset.Zero
-                                        }
-                                    )
+                            shape = PillShape,
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(12.dp)
+                                .clickable {
+                                    scale = 1f
+                                    offset = Offset.Zero
                                 }
-                            }
+                        ) {
+                            Text(
+                                text = "Reset (${String.format("%.1f", scale)}x)",
+                                fontFamily = UiFontFamily,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
                         }
                     }
                 }
             }
 
-            // Code & Edit Card
+            // Coupon Code Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
+                shape = CardShape,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
+                Column(modifier = Modifier.padding(16.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -308,9 +333,19 @@ fun CouponDetailScreen(
                                 editErrorMessage = null
                             }
                         ) {
-                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text(if (isEditingCode) "Cancel Edit" else "Edit Code")
+                            Text(
+                                text = if (isEditingCode) "Cancel" else "Edit code",
+                                fontFamily = UiFontFamily,
+                                color = MaterialTheme.colorScheme.primary,
+                                softWrap = false
+                            )
                         }
                     }
 
@@ -323,16 +358,32 @@ fun CouponDetailScreen(
                                 editedCodeInput = it.uppercase()
                                 editErrorMessage = null
                             },
-                            label = { Text("Coupon Code (Auto-Uppercase)") },
+                            label = { Text("Coupon code", fontFamily = UiFontFamily) },
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                fontFamily = CodeFontFamily,
+                                fontWeight = FontWeight.SemiBold
+                            ),
                             singleLine = true,
                             isError = editErrorMessage != null,
                             supportingText = {
                                 if (editErrorMessage != null) {
-                                    Text(editErrorMessage!!, color = MaterialTheme.colorScheme.error)
+                                    Text(
+                                        editErrorMessage!!,
+                                        fontFamily = UiFontFamily,
+                                        color = BrickError
+                                    )
                                 } else {
-                                    Text("No code found. Type it from the printed text under the QR.")
+                                    Text(
+                                        "Enter the code printed under the QR.",
+                                        fontFamily = UiFontFamily
+                                    )
                                 }
                             },
+                            shape = FieldShape,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                            ),
                             keyboardOptions = KeyboardOptions(
                                 capitalization = KeyboardCapitalization.Characters,
                                 imeAction = ImeAction.Done
@@ -354,7 +405,7 @@ fun CouponDetailScreen(
                                 .testTag("edit_code_textfield")
                         )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
                         Button(
                             onClick = {
@@ -367,21 +418,34 @@ fun CouponDetailScreen(
                                     }
                                 }
                             },
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            shape = ButtonShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
                         ) {
-                            Icon(Icons.Default.Check, contentDescription = null)
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Save Code", fontWeight = FontWeight.Bold)
+                            Text(
+                                "Save code",
+                                fontFamily = UiFontFamily,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     } else {
                         Text(
-                            text = "COUPON CODE",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = "CODE",
+                            fontFamily = UiFontFamily,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            letterSpacing = 1.sp
                         )
 
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -389,29 +453,38 @@ fun CouponDetailScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = coupon.code ?: "No Code Extracted",
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontFamily = FontFamily.Monospace,
-                                color = if (coupon.code != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                                text = coupon.code ?: "No code found",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = CodeFontFamily,
+                                color = if (coupon.code != null) MaterialTheme.colorScheme.onSurface else BrickError,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
 
                             if (!coupon.code.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Button(
                                     onClick = {
                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                         clipboard.setPrimaryClip(ClipData.newPlainText("Coupon Code", coupon.code))
-                                        Toast.makeText(context, "Code copied to clipboard!", Toast.LENGTH_SHORT).show()
                                         coroutineScope.launch {
                                             snackbarHostState.showSnackbar("Copied: ${coupon.code}")
                                         }
                                     },
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.testTag("copy_code_detail_button")
+                                    shape = ButtonShape,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    modifier = Modifier
+                                        .height(44.dp)
+                                        .testTag("copy_code_detail_button")
                                 ) {
                                     Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Copy", fontWeight = FontWeight.Bold)
+                                    Text("Copy", fontFamily = UiFontFamily, fontWeight = FontWeight.SemiBold, softWrap = false)
                                 }
                             }
                         }
@@ -419,142 +492,142 @@ fun CouponDetailScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Metadata details
+                    // Calm metadata
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column {
-                            Text(
-                                text = "Source: ${coupon.source.name}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "Captured: ${StorageHelper.formatDateTime(coupon.createdAt)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
+                        Text(
+                            text = "Captured ${StorageHelper.formatDateTime(coupon.createdAt)}",
+                            fontFamily = UiFontFamily,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         if (coupon.redeemedAt != null) {
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(
-                                    text = "Redeemed",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = EmeraldGreen
-                                )
-                                Text(
-                                    text = StorageHelper.formatDateTime(coupon.redeemedAt),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                            Text(
+                                text = "Redeemed ${StorageHelper.formatDateTime(coupon.redeemedAt)}",
+                                fontFamily = UiFontFamily,
+                                fontSize = 12.sp,
+                                color = StatusRedeemedText
+                            )
                         }
                     }
                 }
             }
 
-            // Change Status Actions Card
+            // Status Selector Card: Segmented status pills
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
+                shape = CardShape,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
+                Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "Change Status",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        text = "Status",
+                        fontFamily = TitleFontFamily,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
 
+                    // Row 1: Unscanned and Redeemed
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        FilterChip(
-                            selected = coupon.status == CouponStatus.UNSCANNED,
+                        StatusOptionPill(
+                            title = "Unscanned",
+                            isSelected = coupon.status == CouponStatus.UNSCANNED,
+                            selectedBg = StatusUnscannedBg,
+                            selectedText = StatusUnscannedText,
                             onClick = { viewModel.updateStatus(coupon, CouponStatus.UNSCANNED) },
-                            label = { Text("Unscanned") },
                             modifier = Modifier.weight(1f)
                         )
-                        FilterChip(
-                            selected = coupon.status == CouponStatus.REDEEMED,
+                        StatusOptionPill(
+                            title = "Redeemed",
+                            isSelected = coupon.status == CouponStatus.REDEEMED,
+                            selectedBg = StatusRedeemedBg,
+                            selectedText = StatusRedeemedText,
                             onClick = { viewModel.updateStatus(coupon, CouponStatus.REDEEMED) },
-                            label = { Text("Redeemed") },
                             modifier = Modifier.weight(1f)
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
+                    // Row 2: Needs review and Failed
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        FilterChip(
-                            selected = coupon.status == CouponStatus.NEEDS_REVIEW,
+                        StatusOptionPill(
+                            title = "Needs review",
+                            isSelected = coupon.status == CouponStatus.NEEDS_REVIEW,
+                            selectedBg = StatusNeedsReviewBg,
+                            selectedText = StatusNeedsReviewText,
                             onClick = { viewModel.updateStatus(coupon, CouponStatus.NEEDS_REVIEW) },
-                            label = { Text("Needs Review") },
                             modifier = Modifier.weight(1f)
                         )
-                        FilterChip(
-                            selected = coupon.status == CouponStatus.FAILED,
+                        StatusOptionPill(
+                            title = "Failed",
+                            isSelected = coupon.status == CouponStatus.FAILED,
+                            selectedBg = StatusFailedBg,
+                            selectedText = StatusFailedText,
                             onClick = { viewModel.updateStatus(coupon, CouponStatus.FAILED) },
-                            label = { Text("Failed") },
                             modifier = Modifier.weight(1f)
                         )
                     }
                 }
             }
 
-            // Export Actions (Gallery and Share)
+            // Photo Export & Secondary Actions
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
+                shape = CardShape,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "Original Photo Actions",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        text = "Photo actions",
+                        fontFamily = TitleFontFamily,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
 
-                    Text(
-                        text = "Photos are stored privately in internal app storage. You can export or share the original whenever you need.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Button(
+                    OutlinedButton(
                         onClick = {
-                            viewModel.saveToGallery(context, coupon) { success, msg ->
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(msg)
-                                }
+                            viewModel.saveToGallery(context, coupon) { _, msg ->
+                                coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
                             }
                         },
+                        shape = ButtonShape,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("save_gallery_button"),
-                        shape = RoundedCornerShape(12.dp)
+                            .height(48.dp)
+                            .testTag("save_gallery_button")
                     ) {
-                        Icon(Icons.Default.FileDownload, contentDescription = null)
+                        Icon(
+                            Icons.Default.FileDownload,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Save Original to Gallery", fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Save original to gallery",
+                            fontFamily = UiFontFamily,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                     }
 
                     OutlinedButton(
@@ -562,27 +635,80 @@ fun CouponDetailScreen(
                             val intent = viewModel.getShareIntent(context, coupon)
                             context.startActivity(Intent.createChooser(intent, "Share original photo"))
                         },
+                        shape = ButtonShape,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("share_button"),
-                        shape = RoundedCornerShape(12.dp)
+                            .height(48.dp)
+                            .testTag("share_button")
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = null)
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Share Original")
+                        Text(
+                            text = "Share photo",
+                            fontFamily = UiFontFamily,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // Brick-tone quiet Delete action
+                    TextButton(
+                        onClick = { showDeleteConfirmDialog = true },
+                        shape = ButtonShape,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("delete_coupon_button")
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = BrickError,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Delete coupon",
+                            fontFamily = UiFontFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            color = BrickError
+                        )
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 
-    // Delete confirmation dialog
+    // Standard AlertDialog for deletion confirmation
     if (showDeleteConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
-            title = { Text("Delete Coupon?") },
+            title = {
+                Text(
+                    text = "Delete coupon?",
+                    fontFamily = TitleFontFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 20.sp
+                )
+            },
             text = {
-                Text("This coupon entry will be permanently removed. The underlying original photo will be deleted from private storage if no other coupon references it.")
+                Text(
+                    text = "This coupon will be removed from CouponVault. The photo will also be deleted from storage.",
+                    fontFamily = UiFontFamily,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             },
             confirmButton = {
                 Button(
@@ -592,16 +718,127 @@ fun CouponDetailScreen(
                             onNavigateBack()
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = RoseError)
+                    shape = ButtonShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = BrickError,
+                        contentColor = Color.White
+                    )
                 ) {
-                    Text("Delete", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "Delete",
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text("Cancel")
+                TextButton(
+                    onClick = { showDeleteConfirmDialog = false },
+                    shape = ButtonShape
+                ) {
+                    Text(
+                        text = "Cancel",
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = CardShape
+        )
+    }
+}
+
+@Composable
+private fun StatusOptionPill(
+    title: String,
+    isSelected: Boolean,
+    selectedBg: Color,
+    selectedText: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val bg = if (isSelected) selectedBg else MaterialTheme.colorScheme.surface
+    val border = if (isSelected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    val text = if (isSelected) selectedText else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Surface(
+        onClick = onClick,
+        shape = PillShape,
+        color = bg,
+        border = border,
+        modifier = modifier.height(38.dp)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)
+        ) {
+            Text(
+                text = title,
+                fontFamily = UiFontFamily,
+                fontSize = 12.sp,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                color = text,
+                softWrap = false
+            )
+        }
+    }
+}
+
+@Preview(name = "Detail - Light 360dp", widthDp = 360, fontScale = 1.3f)
+@Composable
+private fun CouponDetailPreviewLight() {
+    CouponVaultTheme(darkTheme = false) {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = CardShape,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        StatusBadge(status = CouponStatus.UNSCANNED)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "A51PEWKCWB81MXN294719284",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = CodeFontFamily,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
-        )
+        }
+    }
+}
+
+@Preview(name = "Detail - Dark 360dp", widthDp = 360, fontScale = 1.3f)
+@Composable
+private fun CouponDetailPreviewDark() {
+    CouponVaultTheme(darkTheme = true) {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = CardShape,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        StatusBadge(status = CouponStatus.NEEDS_REVIEW)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "B99QRXCZLA01",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = CodeFontFamily
+                        )
+                    }
+                }
+            }
+        }
     }
 }

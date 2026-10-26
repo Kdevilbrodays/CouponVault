@@ -2,29 +2,59 @@ package com.example.couponvault.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Slate900 = Color(0xFF0F172A)
-val Slate800 = Color(0xFF1E293B)
-val Slate700 = Color(0xFF334155)
-val Slate600 = Color(0xFF475569)
-val Slate300 = Color(0xFFCBD5E1)
-val Slate100 = Color(0xFFF1F5F9)
-val Slate50 = Color(0xFFF8FAFC)
+// --- Light Paper Palette ---
+val PaperBackground = Color(0xFFF4F1EA)
+val PaperSurface = Color(0xFFFBF9F4)
+val PaperSurfaceVariant = Color(0xFFECE8DC)
+val PaperOutline = Color(0xFFDDD8C8)
+val PaperOnBackground = Color(0xFF1F1D1A)
+val PaperOnSurfaceVariant = Color(0xFF5E5A52)
+val ClayPrimary = Color(0xFFB5532F)
+val ClayOnPrimary = Color(0xFFFFFFFF)
 
-val PrimaryBlue = Color(0xFF2563EB)
-val PrimaryBlueLight = Color(0xFF60A5FA)
-val PrimaryBlueDark = Color(0xFF1D4ED8)
+// --- Dark Warm Palette (Warm, never navy or pure black) ---
+val DarkPaperBackground = Color(0xFF1F1E1C)
+val DarkPaperSurface = Color(0xFF2A2825)
+val DarkPaperSurfaceVariant = Color(0xFF34312D)
+val DarkPaperOutline = Color(0xFF46423B)
+val DarkPaperOnBackground = Color(0xFFECE8DE)
+val DarkPaperOnSurfaceVariant = Color(0xFFB0AB9F)
+val DarkClayPrimary = Color(0xFFE0805C)
+val DarkClayOnPrimary = Color(0xFF2A1208)
 
-val EmeraldGreen = Color(0xFF10B981)
-val EmeraldGreenLight = Color(0xFF34D399)
-val EmeraldGreenContainer = Color(0xFFD1FAE5)
-val EmeraldGreenOnContainer = Color(0xFF065F46)
+// --- Semantic Status Pills (Tinted container + text, no border) ---
+// Light
+val StatusUnscannedContainerLight = Color(0xFFF1DFD2)
+val StatusUnscannedTextLight = Color(0xFF7A3A1E)
+val StatusRedeemedContainerLight = Color(0xFFDDE5D3)
+val StatusRedeemedTextLight = Color(0xFF3F5A2E)
+val StatusFailedContainerLight = Color(0xFFF1D6D2)
+val StatusFailedTextLight = Color(0xFF8A2E25)
+val StatusReviewContainerLight = Color(0xFFF0E2BC)
+val StatusReviewTextLight = Color(0xFF6B4E0E)
 
-val AmberWarning = Color(0xFFF59E0B)
-val AmberWarningLight = Color(0xFFFBBF24)
-val AmberWarningContainer = Color(0xFFFEF3C7)
-val AmberWarningOnContainer = Color(0xFF92400E)
+// Dark
+val StatusUnscannedContainerDark = Color(0xFF3B2418)
+val StatusUnscannedTextDark = Color(0xFFF1DFD2)
+val StatusRedeemedContainerDark = Color(0xFF22331C)
+val StatusRedeemedTextDark = Color(0xFFDDE5D3)
+val StatusFailedContainerDark = Color(0xFF3D1F1C)
+val StatusFailedTextDark = Color(0xFFF1D6D2)
+val StatusReviewContainerDark = Color(0xFF3B301A)
+val StatusReviewTextDark = Color(0xFFF0E2BC)
 
-val RoseError = Color(0xFFEF4444)
-val RoseErrorLight = Color(0xFFF87171)
-val RoseErrorContainer = Color(0xFFFEE2E2)
-val RoseErrorOnContainer = Color(0xFF991B1B)
+// --- Aliases for ergonomic usage ---
+val PrimaryClay = ClayPrimary
+val BrickError = Color(0xFF8A2E25)
+val DarkBrickError = Color(0xFFE06D60)
+val RoseError = BrickError
+val EmeraldGreen = StatusRedeemedTextLight
+
+val StatusUnscannedBg = StatusUnscannedContainerLight
+val StatusUnscannedText = StatusUnscannedTextLight
+val StatusRedeemedBg = StatusRedeemedContainerLight
+val StatusRedeemedText = StatusRedeemedTextLight
+val StatusNeedsReviewBg = StatusReviewContainerLight
+val StatusNeedsReviewText = StatusReviewTextLight
+val StatusFailedBg = StatusFailedContainerLight
+val StatusFailedText = StatusFailedTextLight

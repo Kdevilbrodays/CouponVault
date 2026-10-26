@@ -1,8 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="66dp"
-        android:height="66dp"
-        android:drawable="@drawable/ic_coupon_vault"
-        android:gravity="center" />
-</layer-list>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- QR Corner Mark: Outer Frame in Clay (#B5532F) -->
+    <path
+        android:fillColor="#B5532F"
+        android:fillType="evenOdd"
+        android:pathData="M 39,33 L 69,33 C 72.3,33 75,35.7 75,39 L 75,69 C 75,72.3 72.3,75 69,75 L 39,75 C 35.7,75 33,72.3 33,69 L 33,39 C 33,35.7 35.7,33 39,33 Z M 41,39 C 39.9,39 39,39.9 39,41 L 39,67 C 39,68.1 39.9,69 41,69 L 67,69 C 68.1,69 69,68.1 69,67 L 69,41 C 69,39.9 68.1,39 67,39 L 41,39 Z" />
+
+    <!-- QR Corner Mark: Center Solid Core in Clay (#B5532F) -->
+    <path
+        android:fillColor="#B5532F"
+        android:pathData="M 47,45 L 61,45 C 62.1,45 63,45.9 63,47 L 63,61 C 63,62.1 62.1,63 61,63 L 47,63 C 45.9,63 45,62.1 45,61 L 45,47 C 45,45.9 45.9,45 47,45 Z" />
+</vector>
