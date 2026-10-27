@@ -129,6 +129,7 @@ import coil.size.Scale
 import com.example.couponvault.data.Coupon
 import com.example.couponvault.data.CouponSource
 import com.example.couponvault.data.CouponStatus
+import com.example.couponvault.data.ExtractionState
 import com.example.couponvault.ui.CouponViewModel
 import com.example.couponvault.ui.components.StatusBadge
 import com.example.couponvault.ui.theme.ButtonShape
@@ -1104,7 +1105,10 @@ fun CouponItemCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    StatusBadge(status = coupon.status)
+                    StatusBadge(
+                        status = coupon.status,
+                        extractionState = coupon.extractionState
+                    )
 
                     if (!coupon.code.isNullOrBlank() && !isSelectionMode) {
                         IconButton(
@@ -1137,12 +1141,22 @@ fun CouponItemCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 } else {
+                    val fallbackText = when {
+                        coupon.extractionState == ExtractionState.PENDING -> "Reading photo..."
+                        coupon.status == CouponStatus.NEEDS_REVIEW -> "Tap to review photo & code"
+                        else -> "No code found"
+                    }
+                    val fallbackColor = if (coupon.extractionState == ExtractionState.PENDING) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    }
                     Text(
-                        text = if (coupon.status == CouponStatus.NEEDS_REVIEW) "Tap to review photo & code" else "No code found",
+                        text = fallbackText,
                         fontSize = 13.sp,
                         fontFamily = UiFontFamily,
                         fontWeight = FontWeight.Normal,
-                        color = MaterialTheme.colorScheme.error,
+                        color = fallbackColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )

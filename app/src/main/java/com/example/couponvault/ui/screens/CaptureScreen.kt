@@ -3,24 +3,27 @@ package com.example.couponvault.ui.screens
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.mlkit.vision.MlKitAnalyzer
+import androidx.camera.view.CameraController
+import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,17 +63,23 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -84,10 +93,17 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.example.couponvault.camera.BarcodeItem
+import com.example.couponvault.camera.LiveQrIndicator
+import com.example.couponvault.camera.LiveQrTracker
+import com.example.couponvault.data.Coupon
+import com.example.couponvault.data.CouponStatus
+import com.example.couponvault.data.ExtractionState
 import com.example.couponvault.ui.CouponViewModel
 import com.example.couponvault.ui.theme.BrickError
 import com.example.couponvault.ui.theme.ButtonShape
 import com.example.couponvault.ui.theme.CardShape
+import com.example.couponvault.ui.theme.CodeFontFamily
 import com.example.couponvault.ui.theme.CouponVaultTheme
 import com.example.couponvault.ui.theme.FieldShape
 import com.example.couponvault.ui.theme.PillShape
@@ -96,7 +112,11 @@ import com.example.couponvault.ui.theme.StatusNeedsReviewText
 import com.example.couponvault.ui.theme.StatusRedeemedText
 import com.example.couponvault.ui.theme.TitleFontFamily
 import com.example.couponvault.ui.theme.UiFontFamily
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.io.File
 
 @Composable
@@ -115,7 +135,7 @@ fun CaptureScreen(
         }
     }
 
-    // MediaStore gallery delete launcher (Android 11+) declared at top level of screen composable
+    // MediaStore gallery delete launcher (Android 11+) declared at top level
     val galleryDeleteLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
@@ -186,9 +206,11 @@ fun CameraPreviewContent(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val haptic = LocalHapticFeedback.current
 
     val sessionCount by viewModel.sessionPhotoCount.collectAsStateWithLifecycle()
-    val isCapturing by viewModel.isCapturing.collectAsStateWithLifecycle()
+    val sessionCoupons by viewModel.sessionCoupons.collectAsStateWithLifecycle()
+    val lastCapturedCoupon by viewModel.lastCapturedCoupon.collectAsStateWithLifecycle()
     val captureFeedback by viewModel.captureFeedback.collectAsStateWithLifecycle()
     val lastCapturedImagePath by viewModel.lastCapturedImagePath.collectAsStateWithLifecycle()
     val batchProgress by viewModel.batchProgress.collectAsStateWithLifecycle()
@@ -197,20 +219,113 @@ fun CameraPreviewContent(
     val pendingDeleteUris by viewModel.pendingDeleteUris.collectAsStateWithLifecycle()
 
     var isTorchEnabled by remember { mutableStateOf(false) }
-    var activeCamera by remember { mutableStateOf<Camera?>(null) }
+    var showShutterFlash by remember { mutableStateOf(false) }
 
-    val imageCapture = remember {
-        ImageCapture.Builder()
-            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-            .build()
+    // Live Viewfinder state
+    var previewWidthPx by remember { mutableFloatStateOf(1080f) }
+    var currentLiveIndicator by remember { mutableStateOf<LiveQrIndicator>(LiveQrIndicator.Searching) }
+
+    val tracker = remember {
+        LiveQrTracker(
+            previewWidthProvider = { previewWidthPx },
+            onNewCodeScannable = { _ ->
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            }
+        )
     }
 
-    // Auto-dismiss the feedback banner after 2.8 seconds
+    // Auto-dismiss the feedback banner after 2.4 seconds
     LaunchedEffect(captureFeedback) {
         if (captureFeedback != null) {
-            delay(2800)
+            delay(2400)
             viewModel.dismissFeedback()
         }
+    }
+
+    // Shutter flash animation auto-fadeout
+    LaunchedEffect(showShutterFlash) {
+        if (showShutterFlash) {
+            delay(70)
+            showShutterFlash = false
+        }
+    }
+
+    // Clear live indicator after 400ms without detection
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            delay(100)
+            val now = System.currentTimeMillis()
+            currentLiveIndicator = tracker.onAnalysisResult(emptyList(), now)
+        }
+    }
+
+    // CameraController with ImageAnalysis throttled to 6-8 analyses/sec (~140ms)
+    val cameraController = remember {
+        LifecycleCameraController(context).apply {
+            cameraSelector = androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA
+            imageCaptureMode = ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
+
+            val qrScannerOptions = BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .build()
+            val barcodeScanner = BarcodeScanning.getClient(qrScannerOptions)
+
+            var lastAnalysisTime = 0L
+            val minIntervalMs = 140L // ~7 analyses per second
+
+            val analyzer = MlKitAnalyzer(
+                listOf(barcodeScanner),
+                CameraController.COORDINATE_SYSTEM_VIEW_REFERENCED,
+                ContextCompat.getMainExecutor(context)
+            ) { result ->
+                val now = SystemClock.uptimeMillis()
+                if (now - lastAnalysisTime < minIntervalMs) {
+                    return@MlKitAnalyzer
+                }
+                lastAnalysisTime = now
+
+                val barcodes = result?.getValue(barcodeScanner)?.mapNotNull { barcode ->
+                    val raw = barcode.rawValue ?: barcode.displayValue
+                    if (raw != null) {
+                        BarcodeItem(rawValue = raw, boundingBox = barcode.boundingBox)
+                    } else null
+                } ?: emptyList()
+
+                currentLiveIndicator = tracker.onAnalysisResult(barcodes, System.currentTimeMillis())
+            }
+
+            setImageAnalysisAnalyzer(ContextCompat.getMainExecutor(context), analyzer)
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        cameraController.bindToLifecycle(lifecycleOwner)
+        onDispose {
+            cameraController.clearImageAnalysisAnalyzer()
+            cameraController.unbind()
+        }
+    }
+
+    // Instant Done handler: calculates summary, finishes session, navigates back immediately
+    val onDoneClicked: () -> Unit = {
+        val total = sessionCount
+        val summary = if (total > 0) {
+            val codesFound = sessionCoupons.count { it.code != null }
+            val needReview = sessionCoupons.count {
+                it.status == CouponStatus.NEEDS_REVIEW && it.extractionState == ExtractionState.DONE
+            }
+            val reading = sessionCoupons.count { it.extractionState == ExtractionState.PENDING }
+
+            buildString {
+                append("$total saved")
+                if (codesFound > 0) append(", $codesFound codes found")
+                if (needReview > 0) append(", $needReview need review")
+                if (reading > 0) append(", $reading reading...")
+            }
+        } else null
+
+        viewModel.finishSession(summary)
+        onClose()
     }
 
     Box(
@@ -222,56 +337,38 @@ fun CameraPreviewContent(
         // CameraX Surface Preview
         AndroidView(
             factory = { ctx ->
-                val previewView = PreviewView(ctx).apply {
+                PreviewView(ctx).apply {
                     scaleType = PreviewView.ScaleType.FILL_CENTER
+                    controller = cameraController
+                    post {
+                        if (width > 0) previewWidthPx = width.toFloat()
+                    }
                 }
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
-                    val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-                    try {
-                        cameraProvider.unbindAll()
-                        val camera = cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            cameraSelector,
-                            preview,
-                            imageCapture
-                        )
-                        activeCamera = camera
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }, ContextCompat.getMainExecutor(ctx))
-
-                previewView
             },
             modifier = Modifier.fillMaxSize()
         )
 
-        // Overlay reticle guide: Hairline paper frame with generous breathing room
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(48.dp),
-            contentAlignment = Alignment.Center
+        // Live Viewfinder Overlay (Replacing static guide frame)
+        LiveViewfinderOverlay(
+            indicator = currentLiveIndicator,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Shutter flash animation (instant visual feedback on tap)
+        AnimatedVisibility(
+            visible = showShutterFlash,
+            enter = fadeIn(tween(25)),
+            exit = fadeOut(tween(90)),
+            modifier = Modifier.fillMaxSize()
         ) {
             Box(
                 modifier = Modifier
-                    .size(280.dp)
-                    .border(
-                        width = 1.dp,
-                        color = Color.White.copy(alpha = 0.45f),
-                        shape = RoundedCornerShape(16.dp)
-                    )
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = 0.55f))
             )
         }
 
         // Top Bar: Tidy row with Close, Session counter pill, Torch toggle.
-        // Generous spacing between elements so pills NEVER touch each other.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -282,7 +379,7 @@ fun CameraPreviewContent(
         ) {
             // Close button (48dp touch target)
             IconButton(
-                onClick = onClose,
+                onClick = onDoneClicked,
                 modifier = Modifier
                     .size(48.dp)
                     .clip(CircleShape)
@@ -297,7 +394,7 @@ fun CameraPreviewContent(
                 )
             }
 
-            // Running Session Counter: quiet paper pill
+            // Running Session Counter: quiet paper pill, increments immediately on tap
             Surface(
                 shape = PillShape,
                 color = Color.Black.copy(alpha = 0.55f),
@@ -328,7 +425,7 @@ fun CameraPreviewContent(
             IconButton(
                 onClick = {
                     val target = !isTorchEnabled
-                    activeCamera?.cameraControl?.enableTorch(target)
+                    cameraController.enableTorch(target)
                     isTorchEnabled = target
                 },
                 modifier = Modifier
@@ -346,7 +443,7 @@ fun CameraPreviewContent(
             }
         }
 
-        // Bottom-anchored quiet paper snackbar: Never covers the center of the camera preview
+        // Bottom-anchored quiet paper snackbar: Never covers camera center
         AnimatedVisibility(
             visible = captureFeedback != null,
             enter = slideInVertically { it } + fadeIn(),
@@ -354,7 +451,7 @@ fun CameraPreviewContent(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = 110.dp, start = 24.dp, end = 24.dp)
+                .padding(bottom = 148.dp, start = 24.dp, end = 24.dp)
         ) {
             captureFeedback?.let { feedback ->
                 Surface(
@@ -391,21 +488,40 @@ fun CameraPreviewContent(
             }
         }
 
-        // Bottom Controls: Single Gallery Import shortcut, Ivory Shutter with Clay Center, Readable Done button
-        Box(
+        // Bottom Controls Container with session strip
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .background(Color.Black.copy(alpha = 0.55f))
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 20.dp)
         ) {
+            // Optional Session Strip (last 5 photos with live status badges)
+            if (sessionCoupons.isNotEmpty()) {
+                val recentCoupons = remember(sessionCoupons) {
+                    sessionCoupons.takeLast(5)
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    recentCoupons.forEach { coupon ->
+                        SessionStripThumbnail(coupon = coupon)
+                    }
+                }
+            }
+
+            // Bottom Actions Row: Gallery Import shortcut, Ivory Shutter with Clay Center, Readable Done button
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Single Gallery Import Shortcut Button (48dp touch target)
+                // Gallery Import / Last Photo Slot with live extraction badge (48dp target)
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
@@ -416,23 +532,74 @@ fun CameraPreviewContent(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(50.dp)
                             .clip(FieldShape)
                             .background(Color.White.copy(alpha = 0.15f))
                             .border(1.dp, Color.White.copy(alpha = 0.35f), FieldShape),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (lastCapturedImagePath != null) {
+                        val imagePath = lastCapturedCoupon?.imagePath ?: lastCapturedImagePath
+                        if (imagePath != null) {
                             AsyncImage(
                                 model = ImageRequest.Builder(context)
-                                    .data(File(lastCapturedImagePath!!))
+                                    .data(File(imagePath))
                                     .crossfade(true)
-                                    .size(96, 96)
+                                    .size(100, 100)
                                     .build(),
                                 contentDescription = "Last captured photo",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
                             )
+
+                            // Tiny badge for the last photo
+                            lastCapturedCoupon?.let { coupon ->
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(2.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(Color.Black.copy(alpha = 0.75f))
+                                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    when {
+                                        coupon.extractionState == ExtractionState.PENDING -> {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(10.dp),
+                                                strokeWidth = 1.5.dp,
+                                                color = Color.White
+                                            )
+                                        }
+                                        coupon.code != null -> {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    tint = Color(0xFF5A7A4A),
+                                                    modifier = Modifier.size(10.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(2.dp))
+                                                Text(
+                                                    text = coupon.code.take(4),
+                                                    color = Color.White,
+                                                    fontSize = 8.sp,
+                                                    fontFamily = CodeFontFamily,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                        else -> {
+                                            Text(
+                                                text = "?",
+                                                color = Color.White,
+                                                fontSize = 9.sp,
+                                                fontFamily = UiFontFamily,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             Icon(
                                 imageVector = Icons.Default.PhotoLibrary,
@@ -442,7 +609,7 @@ fun CameraPreviewContent(
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(3.dp))
                     Text(
                         text = "Import",
                         color = Color.White.copy(alpha = 0.9f),
@@ -452,7 +619,7 @@ fun CameraPreviewContent(
                     )
                 }
 
-                // Shutter Button: Ivory ring with Clay center
+                // Shutter Button: Instant non-blocking tap, NO SPINNER
                 Box(
                     modifier = Modifier
                         .size(80.dp)
@@ -460,28 +627,35 @@ fun CameraPreviewContent(
                         .background(Color(0xFFFBF9F4)) // Ivory outer ring
                         .padding(5.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF1F1D1A)) // Thin separator ring
+                        .background(Color(0xFF1F1D1A)) // Thin dark spacer
                         .padding(3.dp)
                         .clip(CircleShape)
                         .background(PrimaryClay) // Clay center
-                        .clickable(enabled = !isCapturing) {
-                            viewModel.capturePhoto(context, imageCapture)
+                        .clickable {
+                            viewModel.capturePhoto(
+                                context = context,
+                                cameraController = cameraController,
+                                onTapAccepted = {
+                                    showShutterFlash = true
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                            )
                         }
                         .testTag("shutter_button"),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (isCapturing) {
-                        CircularProgressIndicator(
-                            color = Color.White,
-                            modifier = Modifier.size(28.dp),
-                            strokeWidth = 2.5.dp
-                        )
-                    }
+                    // Shutter button center core (instant response, never blocked)
+                    Box(
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .background(PrimaryClay)
+                    )
                 }
 
-                // Readable "Done" Button: High-contrast Ivory paper button with dark text
+                // Done Button: Always instant, shows session summary
                 Button(
-                    onClick = onClose,
+                    onClick = onDoneClicked,
                     shape = ButtonShape,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFFFBF9F4),
@@ -548,8 +722,7 @@ fun CameraPreviewContent(
         }
     }
 
-    // Gallery Delete Offer Dialog (Defect #9):
-    // Standard AlertDialog: serif title, 2-3 line body, right-aligned row with [Keep] as text button and [Delete] as filled brick-tone button.
+    // Gallery Delete Offer Dialog
     if (showDeleteGalleryDialog && pendingDeleteUris.isNotEmpty()) {
         val photoCount = pendingDeleteUris.size
         val countText = if (photoCount == 1) "1 photo has" else "$photoCount photos have"
@@ -604,6 +777,275 @@ fun CameraPreviewContent(
             shape = CardShape
         )
     }
+}
+
+/**
+ * Session strip item displaying a small thumbnail of a recently captured coupon
+ * along with its live background extraction state badge.
+ */
+@Composable
+private fun SessionStripThumbnail(coupon: Coupon) {
+    val context = LocalContext.current
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.White.copy(alpha = 0.2f))
+            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+    ) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(File(coupon.imagePath))
+                .crossfade(true)
+                .size(72, 72)
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Extraction status badge overlay
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(1.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.75f))
+                .size(12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            when {
+                coupon.extractionState == ExtractionState.PENDING -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(8.dp),
+                        strokeWidth = 1.2.dp,
+                        color = Color.White
+                    )
+                }
+                coupon.code != null -> {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = Color(0xFF5A7A4A),
+                        modifier = Modifier.size(8.dp)
+                    )
+                }
+                else -> {
+                    Text(
+                        text = "?",
+                        color = Color.White,
+                        fontSize = 7.sp,
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Live Viewfinder Overlay that draws dynamic corner brackets and hint pills
+ * based on ML Kit real-time detection.
+ */
+@Composable
+private fun LiveViewfinderOverlay(
+    indicator: LiveQrIndicator,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier) {
+        // Draw brackets / frame on Canvas
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            when (indicator) {
+                is LiveQrIndicator.Searching -> {
+                    // Thin neutral guide frame centered
+                    val frameSize = 260.dp.toPx()
+                    val left = (size.width - frameSize) / 2f
+                    val top = (size.height - frameSize) / 2f
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = 0.4f),
+                        topLeft = Offset(left, top),
+                        size = androidx.compose.ui.geometry.Size(frameSize, frameSize),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(16.dp.toPx()),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                    )
+                }
+                is LiveQrIndicator.MoveCloser -> {
+                    drawCornerBrackets(
+                        box = indicator.box,
+                        color = Color(0xFFD97706), // Amber
+                        strokeWidth = 3.dp.toPx(),
+                        bracketLength = 18.dp.toPx()
+                    )
+                }
+                is LiveQrIndicator.NotCoupon -> {
+                    drawCornerBrackets(
+                        box = indicator.box,
+                        color = Color(0xFFD97706), // Amber
+                        strokeWidth = 3.dp.toPx(),
+                        bracketLength = 18.dp.toPx()
+                    )
+                }
+                is LiveQrIndicator.Scannable -> {
+                    drawCornerBrackets(
+                        box = indicator.box,
+                        color = Color(0xFF5A7A4A), // Sage green
+                        strokeWidth = 3.5.dp.toPx(),
+                        bracketLength = 20.dp.toPx()
+                    )
+                }
+            }
+        }
+
+        // Live Hint Pill Overlay
+        when (indicator) {
+            is LiveQrIndicator.Searching -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 180.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = PillShape,
+                        color = Color.Black.copy(alpha = 0.6f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+                        modifier = Modifier.padding(top = 290.dp)
+                    ) {
+                        Text(
+                            text = "Point at a coupon QR",
+                            color = Color.White,
+                            fontFamily = UiFontFamily,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+            is LiveQrIndicator.MoveCloser -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 180.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = PillShape,
+                        color = Color(0xFFD97706),
+                        shadowElevation = 4.dp
+                    ) {
+                        Text(
+                            text = "Move closer",
+                            color = Color.White,
+                            fontFamily = UiFontFamily,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+            is LiveQrIndicator.NotCoupon -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 180.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = PillShape,
+                        color = Color(0xFFD97706),
+                        shadowElevation = 4.dp
+                    ) {
+                        Text(
+                            text = "QR found, but not a coupon",
+                            color = Color.White,
+                            fontFamily = UiFontFamily,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+            is LiveQrIndicator.Scannable -> {
+                val shortenedCode = if (indicator.code.length > 12) {
+                    "${indicator.code.take(6)}...${indicator.code.takeLast(4)}"
+                } else {
+                    indicator.code
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 180.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = PillShape,
+                        color = Color(0xFF3F5A2E), // Sage green
+                        shadowElevation = 4.dp
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = shortenedCode,
+                                color = Color.White,
+                                fontFamily = CodeFontFamily,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Draws crisp corner brackets snapped around a bounding box.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCornerBrackets(
+    box: RectF,
+    color: Color,
+    strokeWidth: Float,
+    bracketLength: Float
+) {
+    // Inflate slightly for breathing room
+    val padding = 10f
+    val left = box.left - padding
+    val top = box.top - padding
+    val right = box.right + padding
+    val bottom = box.bottom + padding
+
+    val l = bracketLength.coerceAtMost((right - left) / 2.5f)
+    val cap = StrokeCap.Round
+
+    // Top-Left
+    drawLine(color, Offset(left, top), Offset(left + l, top), strokeWidth, cap)
+    drawLine(color, Offset(left, top), Offset(left, top + l), strokeWidth, cap)
+
+    // Top-Right
+    drawLine(color, Offset(right, top), Offset(right - l, top), strokeWidth, cap)
+    drawLine(color, Offset(right, top), Offset(right, top + l), strokeWidth, cap)
+
+    // Bottom-Left
+    drawLine(color, Offset(left, bottom), Offset(left + l, bottom), strokeWidth, cap)
+    drawLine(color, Offset(left, bottom), Offset(left, bottom - l), strokeWidth, cap)
+
+    // Bottom-Right
+    drawLine(color, Offset(right, bottom), Offset(right - l, bottom), strokeWidth, cap)
+    drawLine(color, Offset(right, bottom), Offset(right, bottom - l), strokeWidth, cap)
 }
 
 @Composable

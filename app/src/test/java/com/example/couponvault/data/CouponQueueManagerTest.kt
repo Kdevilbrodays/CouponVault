@@ -73,7 +73,13 @@ class FakeCouponDao : CouponDao {
         couponsFlow.map { list -> list.filter { it.status == status } }
 
     override fun getNeedsReviewCoupons(): Flow<List<Coupon>> =
-        couponsFlow.map { list -> list.filter { it.status == CouponStatus.NEEDS_REVIEW } }
+        couponsFlow.map { list -> list.filter { it.status == CouponStatus.NEEDS_REVIEW && it.extractionState == ExtractionState.DONE } }
+
+    override suspend fun getPendingCouponsList(): List<Coupon> =
+        coupons.filter { it.extractionState == ExtractionState.PENDING }
+
+    override fun getPendingCouponsFlow(): Flow<List<Coupon>> =
+        couponsFlow.map { list -> list.filter { it.extractionState == ExtractionState.PENDING } }
 
     override fun getUnscannedQueueFlow(): Flow<List<Coupon>> =
         couponsFlow.map { list ->

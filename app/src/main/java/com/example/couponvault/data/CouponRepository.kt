@@ -45,6 +45,14 @@ class CouponRepository(private val couponDao: CouponDao) {
         couponDao.getCouponByCode(code)
     }
 
+    suspend fun insertCoupon(coupon: Coupon): Long = withContext(Dispatchers.IO) {
+        couponDao.insert(coupon)
+    }
+
+    suspend fun getPendingCouponsList(): List<Coupon> = withContext(Dispatchers.IO) {
+        couponDao.getPendingCouponsList()
+    }
+
     suspend fun updateCoupon(coupon: Coupon) = withContext(Dispatchers.IO) {
         couponDao.update(coupon)
     }

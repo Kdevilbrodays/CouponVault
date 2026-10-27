@@ -47,6 +47,9 @@ class DatabaseMigrationTest {
                     if (oldVersion <= 2 && newVersion >= 3) {
                         MIGRATION_2_3.migrate(db)
                     }
+                    if (oldVersion <= 3 && newVersion >= 4) {
+                        MIGRATION_3_4.migrate(db)
+                    }
                 }
             })
             .build()
@@ -176,6 +179,55 @@ class DatabaseMigrationTest {
 
         cursor.close()
         helperV3.close()
+        dbFile.delete()
+    }
+
+    @Test
+    fun testMigrationFrom3To4AddsExtractionStateColumnWithDefaultDone() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbFile = File(context.cacheDir, "migration_test_3_4_${System.currentTimeMillis()}.db")
+        dbFile.deleteOnExit()
+
+        // 1. Create DB at Version 3 and insert row
+        val helperV3 = createDbHelper(context, dbFile.absolutePath, version = 3)
+        val dbV3 = helperV3.writableDatabase
+
+        val cv = ContentValues().apply {
+            put("id", 100L)
+            put("code", "V3_COUPON_CODE")
+            put("imagePath", "/data/photo_v3.jpg")
+            put("status", "UNSCANNED")
+            put("source", "QR")
+            put("createdAt", 7777L)
+            putNull("redeemedAt")
+        }
+        dbV3.insert("coupons", 0, cv)
+        helperV3.close()
+
+        // 2. Open DB at Version 4 triggering MIGRATION_3_4
+        val helperV4 = createDbHelper(context, dbFile.absolutePath, version = 4)
+        val dbV4 = helperV4.writableDatabase
+
+        // 3. Verify column list
+        val columnNames = mutableListOf<String>()
+        val pragmaCursor = dbV4.query("PRAGMA table_info(coupons)")
+        while (pragmaCursor.moveToNext()) {
+            val nameIndex = pragmaCursor.getColumnIndex("name")
+            columnNames.add(pragmaCursor.getString(nameIndex))
+        }
+        pragmaCursor.close()
+
+        assertTrue("Expected 'extractionState' column", columnNames.contains("extractionState"))
+
+        // 4. Verify existing row has default value 'DONE'
+        val cursor = dbV4.query("SELECT id, code, extractionState FROM coupons WHERE id = 100")
+        assertTrue(cursor.moveToNext())
+        assertEquals(100L, cursor.getLong(0))
+        assertEquals("V3_COUPON_CODE", cursor.getString(1))
+        assertEquals("DONE", cursor.getString(2))
+
+        cursor.close()
+        helperV4.close()
         dbFile.delete()
     }
 }

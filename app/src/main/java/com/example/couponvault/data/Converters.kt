@@ -16,4 +16,11 @@ class Converters {
     @TypeConverter
     fun toSource(value: String?): CouponSource? =
         value?.let { runCatching { CouponSource.valueOf(it) }.getOrDefault(CouponSource.MANUAL) }
+
+    @TypeConverter
+    fun fromExtractionState(state: ExtractionState?): String? = state?.name
+
+    @TypeConverter
+    fun toExtractionState(value: String?): ExtractionState? =
+        value?.let { runCatching { ExtractionState.valueOf(it) }.getOrDefault(ExtractionState.DONE) }
 }

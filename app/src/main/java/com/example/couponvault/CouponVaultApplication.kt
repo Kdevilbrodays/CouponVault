@@ -2,6 +2,7 @@ package com.example.couponvault
 
 import android.app.Application
 import com.example.couponvault.data.AppDatabase
+import com.example.couponvault.data.BackgroundExtractionManager
 import com.example.couponvault.data.CouponQueueManager
 import com.example.couponvault.data.CouponRepository
 import com.example.couponvault.data.OverlayPreferences
@@ -39,10 +40,20 @@ class CouponVaultApplication : Application() {
         )
     }
 
+    val extractionManager: BackgroundExtractionManager by lazy {
+        BackgroundExtractionManager(
+            context = this,
+            couponDao = database.couponDao(),
+            scope = applicationScope
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         installCrashHandler()
+        // Initialize extraction manager on app start
+        extractionManager
     }
 
     private fun installCrashHandler() {

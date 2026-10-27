@@ -19,7 +19,7 @@ interface CouponDao {
     @Query("SELECT * FROM coupons WHERE status = :status ORDER BY createdAt DESC")
     fun getCouponsByStatus(status: CouponStatus): Flow<List<Coupon>>
 
-    @Query("SELECT * FROM coupons WHERE status = 'NEEDS_REVIEW' ORDER BY createdAt DESC")
+    @Query("SELECT * FROM coupons WHERE status = 'NEEDS_REVIEW' AND extractionState = 'DONE' ORDER BY createdAt DESC")
     fun getNeedsReviewCoupons(): Flow<List<Coupon>>
 
     @Query("SELECT * FROM coupons WHERE status = 'UNSCANNED' AND code IS NOT NULL AND code != '' ORDER BY createdAt ASC")
@@ -43,11 +43,17 @@ interface CouponDao {
     @Query("SELECT COUNT(*) FROM coupons WHERE status = 'UNSCANNED'")
     fun getUnscannedCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM coupons WHERE status = 'NEEDS_REVIEW'")
+    @Query("SELECT COUNT(*) FROM coupons WHERE status = 'NEEDS_REVIEW' AND extractionState = 'DONE'")
     fun getNeedsReviewCount(): Flow<Int>
 
     @Query("SELECT COUNT(*) FROM coupons WHERE imagePath = :imagePath")
     suspend fun countByImagePath(imagePath: String): Int
+
+    @Query("SELECT * FROM coupons WHERE extractionState = 'PENDING' ORDER BY createdAt ASC")
+    suspend fun getPendingCouponsList(): List<Coupon>
+
+    @Query("SELECT * FROM coupons WHERE extractionState = 'PENDING' ORDER BY createdAt ASC")
+    fun getPendingCouponsFlow(): Flow<List<Coupon>>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(coupon: Coupon): Long

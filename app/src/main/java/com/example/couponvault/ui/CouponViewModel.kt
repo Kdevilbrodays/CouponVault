@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.view.CameraController
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -16,6 +17,8 @@ import com.example.couponvault.data.Coupon
 import com.example.couponvault.data.CouponRepository
 import com.example.couponvault.data.CouponSource
 import com.example.couponvault.data.CouponStatus
+import com.example.couponvault.data.ExtractionEvent
+import com.example.couponvault.data.ExtractionState
 import com.example.couponvault.data.ProcessResult
 import com.example.couponvault.util.StorageHelper
 import kotlinx.coroutines.Dispatchers
@@ -106,8 +109,24 @@ class CouponViewModel(
     private val _sessionPhotoCount = MutableStateFlow(0)
     val sessionPhotoCount: StateFlow<Int> = _sessionPhotoCount.asStateFlow()
 
-    private val _isCapturing = MutableStateFlow(false)
-    val isCapturing: StateFlow<Boolean> = _isCapturing.asStateFlow()
+    private val _inFlightSaves = MutableStateFlow(0)
+    val inFlightSaves: StateFlow<Int> = _inFlightSaves.asStateFlow()
+
+    private val _sessionCouponIds = MutableStateFlow<List<Long>>(emptyList())
+    val sessionCouponIds: StateFlow<List<Long>> = _sessionCouponIds.asStateFlow()
+
+    val sessionCoupons: StateFlow<List<Coupon>> = combine(
+        repository.allCoupons,
+        _sessionCouponIds
+    ) { all, ids ->
+        ids.mapNotNull { id -> all.find { it.id == id } }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val lastCapturedCoupon: StateFlow<Coupon?> = combine(
+        sessionCoupons
+    ) { (list) ->
+        list.lastOrNull()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     private val _lastCapturedImagePath = MutableStateFlow<String?>(null)
     val lastCapturedImagePath: StateFlow<String?> = _lastCapturedImagePath.asStateFlow()
@@ -128,6 +147,29 @@ class CouponViewModel(
 
     init {
         checkForPreviousCrash()
+        listenToExtractionEvents()
+    }
+
+    private fun listenToExtractionEvents() {
+        viewModelScope.launch {
+            CouponVaultApplication.instance.extractionManager.events.collect { event ->
+                when (event) {
+                    is ExtractionEvent.DuplicateSkipped -> {
+                        _captureFeedback.value = CaptureFeedback(
+                            message = "Duplicate skipped",
+                            isSuccess = true,
+                            isWarning = true
+                        )
+                    }
+                    is ExtractionEvent.CodeFound -> {
+                        // Background extraction found code, Room automatically updates
+                    }
+                    is ExtractionEvent.NoCodeFound -> {
+                        // Background extraction found no code
+                    }
+                }
+            }
+        }
     }
 
     private fun checkForPreviousCrash() {
@@ -263,29 +305,84 @@ class CouponViewModel(
     }
 
     // --- Camera Capture ---
-    fun capturePhoto(context: Context, imageCapture: ImageCapture) {
-        if (_isCapturing.value) return
-        _isCapturing.value = true
+    fun capturePhoto(
+        context: Context,
+        cameraController: CameraController,
+        onTapAccepted: () -> Unit = {}
+    ) {
+        capturePhotoInternal(
+            context = context,
+            takePictureCall = { options, executor, cb -> cameraController.takePicture(options, executor, cb) },
+            onTapAccepted = onTapAccepted
+        )
+    }
+
+    fun capturePhoto(
+        context: Context,
+        imageCapture: ImageCapture,
+        onTapAccepted: () -> Unit = {}
+    ) {
+        capturePhotoInternal(
+            context = context,
+            takePictureCall = { options, executor, cb -> imageCapture.takePicture(options, executor, cb) },
+            onTapAccepted = onTapAccepted
+        )
+    }
+
+    internal fun capturePhotoInternal(
+        context: Context,
+        takePictureCall: (ImageCapture.OutputFileOptions, java.util.concurrent.Executor, ImageCapture.OnImageSavedCallback) -> Unit,
+        onTapAccepted: () -> Unit
+    ) {
+        if (_inFlightSaves.value >= 4) {
+            // Briefly ignore taps if more than ~4 saves are still in flight
+            return
+        }
+
+        _inFlightSaves.value += 1
+        _sessionPhotoCount.value += 1
+        onTapAccepted()
 
         val outputFile = StorageHelper.createOriginalFile(context)
         val outputOptions = ImageCapture.OutputFileOptions.Builder(outputFile).build()
 
-        imageCapture.takePicture(
+        takePictureCall(
             outputOptions,
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    _isCapturing.value = false
-                    _sessionPhotoCount.value += 1
+                    _inFlightSaves.value = (_inFlightSaves.value - 1).coerceAtLeast(0)
                     _lastCapturedImagePath.value = outputFile.absolutePath
 
-                    viewModelScope.launch {
-                        processSavedPhoto(context, outputFile)
+                    // Immediately insert Room row with NEEDS_REVIEW, empty code, and extractionState = PENDING
+                    CouponVaultApplication.instance.applicationScope.launch(Dispatchers.IO) {
+                        try {
+                            val coupon = Coupon(
+                                code = null,
+                                imagePath = outputFile.absolutePath,
+                                status = CouponStatus.NEEDS_REVIEW,
+                                source = CouponSource.MANUAL,
+                                extractionState = ExtractionState.PENDING,
+                                createdAt = System.currentTimeMillis()
+                            )
+                            val newId = repository.insertCoupon(coupon)
+                            withContext(Dispatchers.Main) {
+                                _sessionCouponIds.value = _sessionCouponIds.value + newId
+                            }
+                            CouponVaultApplication.instance.extractionManager.enqueue(newId)
+                        } catch (e: Exception) {
+                            android.util.Log.e("CouponViewModel", "Failed to insert pending coupon", e)
+                        }
                     }
+
+                    _captureFeedback.value = CaptureFeedback(
+                        message = "Saved",
+                        isSuccess = true
+                    )
                 }
 
                 override fun onError(exception: ImageCaptureException) {
-                    _isCapturing.value = false
+                    _inFlightSaves.value = (_inFlightSaves.value - 1).coerceAtLeast(0)
                     _captureFeedback.value = CaptureFeedback(
                         message = "Capture failed: ${exception.localizedMessage ?: "Unknown error"}",
                         isSuccess = false
@@ -293,6 +390,17 @@ class CouponViewModel(
                 }
             }
         )
+    }
+
+    fun finishSession(summaryMessage: String?) {
+        _sessionPhotoCount.value = 0
+        _sessionCouponIds.value = emptyList()
+        if (summaryMessage != null) {
+            _captureFeedback.value = CaptureFeedback(
+                message = summaryMessage,
+                isSuccess = true
+            )
+        }
     }
 
     // --- Import Existing Gallery Photos ---
