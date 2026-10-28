@@ -1,6 +1,6 @@
--- 001_coupons_sync.sql
+-- 20261028090000_coupons_sync.sql
 -- CouponVault Supabase Multi-Device Sync Schema & RPC Functions
--- Safe to execute repeatedly (idempotent)
+-- Safe to execute repeatedly (idempotent, single-transaction compatible)
 
 -- 1. Coupons table
 create table if not exists public.coupons (
