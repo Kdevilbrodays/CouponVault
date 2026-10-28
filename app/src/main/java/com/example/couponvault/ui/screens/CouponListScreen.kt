@@ -60,8 +60,16 @@ import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.SelectAll
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.CloudDone
+import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.CloudQueue
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Sync
+import com.example.couponvault.ui.components.DeleteRedeemedDialog
+import com.example.couponvault.ui.theme.BrickError
+import com.example.couponvault.ui.theme.DarkBrickError
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -153,11 +161,14 @@ fun CouponListScreen(
     viewModel: CouponViewModel,
     onNavigateToCapture: () -> Unit,
     onNavigateToDetail: (Long) -> Unit,
-    onNavigateToReviewQueue: () -> Unit
+    onNavigateToReviewQueue: () -> Unit,
+    onNavigateToSettings: () -> Unit,
+    onNavigateToAccount: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showDeleteAllRedeemedDialog by remember { mutableStateOf(false) }
 
     val coupons by viewModel.coupons.collectAsStateWithLifecycle()
     val unscannedCount by viewModel.unscannedCount.collectAsStateWithLifecycle()
@@ -344,68 +355,35 @@ fun CouponListScreen(
                         containerColor = MaterialTheme.colorScheme.background
                     ),
                     actions = {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                        val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
+                        val userEmail by viewModel.userEmail.collectAsStateWithLifecycle()
+
+                        IconButton(
+                            onClick = onNavigateToAccount,
+                            modifier = Modifier.testTag("home_sync_button")
+                        ) {
+                            val icon = when {
+                                userEmail.isNullOrBlank() -> Icons.Outlined.CloudQueue
+                                syncStatus.state == com.example.couponvault.sync.SyncState.SYNCING -> Icons.Outlined.Sync
+                                syncStatus.state == com.example.couponvault.sync.SyncState.OFFLINE -> Icons.Outlined.CloudOff
+                                syncStatus.state == com.example.couponvault.sync.SyncState.ERROR -> Icons.Outlined.CloudOff
+                                else -> Icons.Outlined.CloudDone
+                            }
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = "Account and sync status",
+                                tint = if (syncStatus.state == com.example.couponvault.sync.SyncState.ERROR) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
                         }
 
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
+                        IconButton(
+                            onClick = onNavigateToSettings,
+                            modifier = Modifier.testTag("home_settings_button")
                         ) {
-                            if (needsReviewCount > 0) {
-                                DropdownMenuItem(
-                                    text = { Text("Review queue ($needsReviewCount)", fontFamily = UiFontFamily) },
-                                    leadingIcon = { Icon(Icons.Default.HelpOutline, contentDescription = null) },
-                                    onClick = {
-                                        showMenu = false
-                                        onNavigateToReviewQueue()
-                                    }
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text("Import photos", fontFamily = UiFontFamily) },
-                                leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    importLauncher.launch(arrayOf("image/*"))
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = if (autoMarkRedeemed) "Auto-mark redeemed: On" else "Auto-mark redeemed: Off",
-                                        fontFamily = UiFontFamily
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = if (autoMarkRedeemed) Icons.Default.CheckCircle else Icons.Default.Close,
-                                        contentDescription = null
-                                    )
-                                },
-                                onClick = {
-                                    showMenu = false
-                                    viewModel.setAutoMarkRedeemed(!autoMarkRedeemed)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Export all originals (folder)", fontFamily = UiFontFamily) },
-                                leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    openDocumentTreeLauncher.launch(null)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Share codes as CSV", fontFamily = UiFontFamily) },
-                                leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    coroutineScope.launch {
-                                        val intent = viewModel.getShareCsvIntent(context)
-                                        context.startActivity(Intent.createChooser(intent, "Share codes CSV"))
-                                    }
-                                }
+                            Icon(
+                                imageVector = Icons.Outlined.Settings,
+                                contentDescription = "Settings",
+                                tint = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
@@ -654,62 +632,96 @@ fun CouponListScreen(
                 }
             }
 
-            // Sticky Header: Filter chips only
+            // Sticky Header: Filter chips (and Delete all redeemed when Redeemed filter is active)
             stickyHeader {
                 Surface(
                     color = MaterialTheme.colorScheme.background,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 20.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val filters = listOf<Pair<CouponStatus?, String>>(
-                            null to "All (${coupons.size})",
-                            CouponStatus.UNSCANNED to "Unscanned ($unscannedCount)",
-                            CouponStatus.REDEEMED to "Redeemed",
-                            CouponStatus.NEEDS_REVIEW to "Needs review ($needsReviewCount)",
-                            CouponStatus.FAILED to "Failed"
-                        )
-                        filters.forEach { (status, label) ->
-                            val isSelected = selectedFilter == status
-                            val testTag = when (status) {
-                                null -> "filter_all"
-                                CouponStatus.UNSCANNED -> "filter_unscanned"
-                                CouponStatus.REDEEMED -> "filter_redeemed"
-                                CouponStatus.NEEDS_REVIEW -> "filter_needs_review"
-                                CouponStatus.FAILED -> "filter_failed"
-                            }
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = { viewModel.setFilter(status) },
-                                label = {
-                                    Text(
-                                        text = label,
-                                        fontFamily = UiFontFamily,
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                        maxLines = 1,
-                                        softWrap = false
-                                    )
-                                },
-                                shape = PillShape,
-                                colors = FilterChipDefaults.filterChipColors(
-                                    containerColor = Color.Transparent,
-                                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                ),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                                ),
-                                modifier = Modifier.testTag(testTag)
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 20.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val filters = listOf<Pair<CouponStatus?, String>>(
+                                null to "All (${coupons.size})",
+                                CouponStatus.UNSCANNED to "Unscanned ($unscannedCount)",
+                                CouponStatus.REDEEMED to "Redeemed",
+                                CouponStatus.NEEDS_REVIEW to "Needs review ($needsReviewCount)",
+                                CouponStatus.FAILED to "Failed"
                             )
+                            filters.forEach { (status, label) ->
+                                val isSelected = selectedFilter == status
+                                val testTag = when (status) {
+                                    null -> "filter_all"
+                                    CouponStatus.UNSCANNED -> "filter_unscanned"
+                                    CouponStatus.REDEEMED -> "filter_redeemed"
+                                    CouponStatus.NEEDS_REVIEW -> "filter_needs_review"
+                                    CouponStatus.FAILED -> "filter_failed"
+                                }
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { viewModel.setFilter(status) },
+                                    label = {
+                                        Text(
+                                            text = label,
+                                            fontFamily = UiFontFamily,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    },
+                                    shape = PillShape,
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        containerColor = Color.Transparent,
+                                        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    ),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                    ),
+                                    modifier = Modifier.testTag(testTag)
+                                )
+                            }
+                        }
+
+                        // Brick-toned "Delete all redeemed" button shown only when Redeemed filter is active and count > 0
+                        if (selectedFilter == CouponStatus.REDEEMED && coupons.isNotEmpty()) {
+                            val isDark = isSystemInDarkTheme()
+                            val brickColor = if (isDark) DarkBrickError else BrickError
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 2.dp),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = { showDeleteAllRedeemedDialog = true },
+                                    colors = ButtonDefaults.textButtonColors(contentColor = brickColor),
+                                    modifier = Modifier.testTag("delete_all_redeemed_home_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.DeleteSweep,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Delete all redeemed (${coupons.size})",
+                                        fontFamily = UiFontFamily,
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1016,6 +1028,17 @@ fun CouponListScreen(
             containerColor = MaterialTheme.colorScheme.surface
         )
     }
+
+    if (showDeleteAllRedeemedDialog) {
+        DeleteRedeemedDialog(
+            count = coupons.size,
+            onDismiss = { showDeleteAllRedeemedDialog = false },
+            onConfirm = {
+                showDeleteAllRedeemedDialog = false
+                viewModel.deleteAllRedeemed()
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1076,23 +1099,49 @@ fun CouponItemCard(
             }
 
             // Thumbnail on paper mat
+            val imageFile = if (coupon.imagePath.isNotBlank()) File(coupon.imagePath) else null
+            val hasLocalFile = imageFile != null && imageFile.exists()
+
             Box(
                 modifier = Modifier
                     .size(72.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
             ) {
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(File(coupon.imagePath))
-                        .crossfade(true)
-                        .size(144, 144)
-                        .scale(Scale.FIT)
-                        .build(),
-                    contentDescription = "Coupon Photo",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+                if (hasLocalFile) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(imageFile)
+                            .crossfade(true)
+                            .size(144, 144)
+                            .scale(Scale.FIT)
+                            .build(),
+                        contentDescription = "Coupon Photo",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.CloudQueue,
+                            contentDescription = "Photo not on device",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "No photo",
+                            fontFamily = UiFontFamily,
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.width(14.dp))

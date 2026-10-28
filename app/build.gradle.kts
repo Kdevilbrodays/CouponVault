@@ -20,6 +20,8 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    buildConfigField("String", "SUPABASE_URL", "\"\"")
+    buildConfigField("String", "SUPABASE_ANON_KEY", "\"\"")
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
@@ -116,7 +118,8 @@ dependencies {
   implementation(libs.kotlinx.coroutines.core)
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
-  // implementation(libs.okhttp)
+  implementation(libs.okhttp)
+  implementation(libs.androidx.work.runtime.ktx)
   // implementation(libs.play.services.location)
   // implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)

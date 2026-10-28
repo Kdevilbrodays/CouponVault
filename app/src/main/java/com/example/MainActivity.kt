@@ -17,10 +17,12 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.couponvault.CouponVaultApplication
 import com.example.couponvault.ui.CouponViewModel
+import com.example.couponvault.ui.screens.AccountScreen
 import com.example.couponvault.ui.screens.CaptureScreen
 import com.example.couponvault.ui.screens.CouponDetailScreen
 import com.example.couponvault.ui.screens.CouponListScreen
 import com.example.couponvault.ui.screens.ReviewQueueScreen
+import com.example.couponvault.ui.screens.SettingsScreen
 import com.example.couponvault.ui.theme.CouponVaultTheme
 
 class MainActivity : ComponentActivity() {
@@ -48,6 +50,7 @@ class MainActivity : ComponentActivity() {
                         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
                             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                                 viewModel.resyncOverlayState(this@MainActivity)
+                                viewModel.syncNow()
                             }
                         }
                         lifecycleOwner.lifecycle.addObserver(observer)
@@ -83,6 +86,33 @@ fun CouponVaultAppNav(viewModel: CouponViewModel) {
                 },
                 onNavigateToReviewQueue = {
                     navController.navigate("review_queue")
+                },
+                onNavigateToSettings = {
+                    navController.navigate("settings")
+                },
+                onNavigateToAccount = {
+                    navController.navigate("account")
+                }
+            )
+        }
+
+        composable("settings") {
+            SettingsScreen(
+                viewModel = viewModel,
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onNavigateToAccount = {
+                    navController.navigate("account")
+                }
+            )
+        }
+
+        composable("account") {
+            AccountScreen(
+                viewModel = viewModel,
+                onNavigateBack = {
+                    navController.popBackStack()
                 }
             )
         }

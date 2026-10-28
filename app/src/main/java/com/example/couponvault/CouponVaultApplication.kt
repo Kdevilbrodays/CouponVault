@@ -48,12 +48,36 @@ class CouponVaultApplication : Application() {
         )
     }
 
+    val supabasePreferences: com.example.couponvault.sync.SupabasePreferences by lazy {
+        com.example.couponvault.sync.SupabasePreferences(this)
+    }
+
+    val supabaseClient: com.example.couponvault.sync.SupabaseClient by lazy {
+        com.example.couponvault.sync.SupabaseClient(supabasePreferences)
+    }
+
+    val syncManager: com.example.couponvault.sync.SyncManager by lazy {
+        com.example.couponvault.sync.SyncManager(
+            repository = repository,
+            client = supabaseClient,
+            preferences = supabasePreferences,
+            scope = applicationScope
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         installCrashHandler()
         // Initialize extraction manager on app start
         extractionManager
+        // Initialize sync manager and schedule periodic sync
+        syncManager
+        try {
+            com.example.couponvault.sync.SyncWorker.schedulePeriodicSync(this)
+        } catch (t: Throwable) {
+            Log.w("CouponVault", "SyncWorker scheduling skipped: ${t.message}")
+        }
     }
 
     private fun installCrashHandler() {

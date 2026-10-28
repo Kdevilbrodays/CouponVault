@@ -4,8 +4,11 @@ import com.example.couponvault.camera.BarcodeItem
 import com.example.couponvault.util.CodeExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 
 sealed interface ProcessResult {
     data class Saved(val code: String, val couponId: Long) : ProcessResult
@@ -22,10 +25,15 @@ sealed interface ProcessResult {
 
 class CouponRepository(private val couponDao: CouponDao) {
 
+    private val _localDataChanged = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val localDataChanged = _localDataChanged.asSharedFlow()
+
     val allCoupons: Flow<List<Coupon>> = couponDao.getAllCoupons()
     val unscannedCount: Flow<Int> = couponDao.getUnscannedCount()
+    val redeemedCount: Flow<Int> = couponDao.getRedeemedCount()
     val needsReviewCount: Flow<Int> = couponDao.getNeedsReviewCount()
     val needsReviewCoupons: Flow<List<Coupon>> = couponDao.getNeedsReviewCoupons()
+    val unsyncedCount: Flow<Int> = couponDao.getUnsyncedCount()
 
     fun getCouponsByStatus(status: CouponStatus): Flow<List<Coupon>> =
         couponDao.getCouponsByStatus(status)
@@ -46,7 +54,15 @@ class CouponRepository(private val couponDao: CouponDao) {
     }
 
     suspend fun insertCoupon(coupon: Coupon): Long = withContext(Dispatchers.IO) {
-        couponDao.insert(coupon)
+        val now = System.currentTimeMillis()
+        val toInsert = coupon.copy(
+            syncId = if (coupon.syncId.isBlank()) UUID.randomUUID().toString() else coupon.syncId,
+            modifiedAt = if (coupon.modifiedAt == 0L) now else coupon.modifiedAt,
+            dirty = true
+        )
+        val id = couponDao.insert(toInsert)
+        _localDataChanged.tryEmit(Unit)
+        id
     }
 
     suspend fun getPendingCouponsList(): List<Coupon> = withContext(Dispatchers.IO) {
@@ -54,32 +70,31 @@ class CouponRepository(private val couponDao: CouponDao) {
     }
 
     suspend fun updateCoupon(coupon: Coupon) = withContext(Dispatchers.IO) {
-        couponDao.update(coupon)
+        val now = System.currentTimeMillis()
+        val toUpdate = coupon.copy(
+            modifiedAt = now,
+            dirty = true
+        )
+        couponDao.update(toUpdate)
+        _localDataChanged.tryEmit(Unit)
     }
 
     suspend fun updateStatusBulk(ids: List<Long>, status: CouponStatus) = withContext(Dispatchers.IO) {
         if (ids.isEmpty()) return@withContext
-        val redeemedTimestamp = if (status == CouponStatus.REDEEMED) System.currentTimeMillis() else null
-        couponDao.updateStatusBulk(ids, status, redeemedTimestamp)
+        val now = System.currentTimeMillis()
+        val redeemedTimestamp = if (status == CouponStatus.REDEEMED) now else null
+        couponDao.updateStatusBulk(ids, status, redeemedTimestamp, now)
+        _localDataChanged.tryEmit(Unit)
     }
 
+    /**
+     * Deleting an unsynced coupon (serverUpdatedAt == null) hard-deletes it.
+     * Deleting a previously synced coupon marks it as a tombstone (deletedAt = now, dirty = true)
+     * so the delete is pushed to the server.
+     */
     suspend fun deleteCoupon(coupon: Coupon): Boolean = withContext(Dispatchers.IO) {
-        couponDao.delete(coupon)
-        val remainingReferences = couponDao.countByImagePath(coupon.imagePath)
-        if (remainingReferences <= 0) {
-            val file = File(coupon.imagePath)
-            if (file.exists()) {
-                file.delete()
-            }
-        }
-        true
-    }
-
-    suspend fun deleteCouponsBulk(ids: List<Long>): Boolean = withContext(Dispatchers.IO) {
-        if (ids.isEmpty()) return@withContext false
-        val targetCoupons = couponDao.getCouponsByIds(ids)
-        couponDao.deleteByIds(ids)
-        for (coupon in targetCoupons) {
+        if (coupon.serverUpdatedAt == null) {
+            couponDao.delete(coupon)
             val remainingReferences = couponDao.countByImagePath(coupon.imagePath)
             if (remainingReferences <= 0) {
                 val file = File(coupon.imagePath)
@@ -87,8 +102,118 @@ class CouponRepository(private val couponDao: CouponDao) {
                     file.delete()
                 }
             }
+        } else {
+            val now = System.currentTimeMillis()
+            couponDao.update(
+                coupon.copy(
+                    deletedAt = now,
+                    modifiedAt = now,
+                    dirty = true
+                )
+            )
         }
+        _localDataChanged.tryEmit(Unit)
         true
+    }
+
+    suspend fun deleteCouponsBulk(ids: List<Long>): Boolean = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext false
+        val targetCoupons = couponDao.getCouponsByIds(ids)
+        val now = System.currentTimeMillis()
+        for (coupon in targetCoupons) {
+            if (coupon.serverUpdatedAt == null) {
+                couponDao.delete(coupon)
+                val remainingReferences = couponDao.countByImagePath(coupon.imagePath)
+                if (remainingReferences <= 0) {
+                    val file = File(coupon.imagePath)
+                    if (file.exists()) {
+                        file.delete()
+                    }
+                }
+            } else {
+                couponDao.update(
+                    coupon.copy(
+                        deletedAt = now,
+                        modifiedAt = now,
+                        dirty = true
+                    )
+                )
+            }
+        }
+        _localDataChanged.tryEmit(Unit)
+        true
+    }
+
+    suspend fun getRedeemedCouponsList(): List<Coupon> = withContext(Dispatchers.IO) {
+        couponDao.getRedeemedCouponsList()
+    }
+
+    suspend fun deleteAllRedeemed(): Int = withContext(Dispatchers.IO) {
+        val redeemed = couponDao.getRedeemedCouponsList()
+        if (redeemed.isEmpty()) return@withContext 0
+        deleteCouponsBulk(redeemed.map { it.id })
+        redeemed.size
+    }
+
+    /**
+     * Wipes all local coupon data (used on sign-out if user chooses to remove local coupons).
+     */
+    suspend fun hardDeleteAllCoupons(): Unit = withContext(Dispatchers.IO) {
+        val all = couponDao.getAllCouponsList()
+        couponDao.deleteAll()
+        for (c in all) {
+            val file = File(c.imagePath)
+            if (file.exists()) {
+                file.delete()
+            }
+        }
+        _localDataChanged.tryEmit(Unit)
+    }
+
+    // --- Sync Support Operations ---
+
+    suspend fun getDirtyCoupons(limit: Int = 50): List<Coupon> = withContext(Dispatchers.IO) {
+        couponDao.getDirtyCoupons(limit)
+    }
+
+    suspend fun getCouponBySyncId(syncId: String): Coupon? = withContext(Dispatchers.IO) {
+        couponDao.getCouponBySyncId(syncId)
+    }
+
+    suspend fun markClean(syncId: String, serverUpdatedAt: Long) = withContext(Dispatchers.IO) {
+        couponDao.markClean(syncId, serverUpdatedAt)
+    }
+
+    suspend fun purgeBySyncId(syncId: String) = withContext(Dispatchers.IO) {
+        val existing = couponDao.getCouponBySyncId(syncId)
+        couponDao.purgeBySyncId(syncId)
+        if (existing != null) {
+            val refCount = couponDao.countByImagePath(existing.imagePath)
+            if (refCount <= 0) {
+                val f = File(existing.imagePath)
+                if (f.exists()) f.delete()
+            }
+        }
+    }
+
+    suspend fun purgeBySyncIds(syncIds: List<String>) = withContext(Dispatchers.IO) {
+        couponDao.purgeBySyncIds(syncIds)
+    }
+
+    suspend fun getUnsyncedCountSync(): Int = withContext(Dispatchers.IO) {
+        couponDao.getUnsyncedCountSync()
+    }
+
+    /**
+     * Saves a coupon from sync without marking it dirty.
+     */
+    suspend fun saveFromSync(coupon: Coupon) = withContext(Dispatchers.IO) {
+        val existing = couponDao.getCouponBySyncId(coupon.syncId)
+        if (existing == null) {
+            couponDao.insert(coupon)
+        } else {
+            couponDao.update(coupon.copy(id = existing.id))
+        }
     }
 
     /**
@@ -127,7 +252,7 @@ class CouponRepository(private val couponDao: CouponDao) {
                             source = CouponSource.QR,
                             createdAt = System.currentTimeMillis()
                         )
-                        val id = couponDao.insert(coupon)
+                        val id = insertCoupon(coupon)
                         savedCodes.add(qrCode)
                         savedIds.add(id)
                     }
@@ -166,7 +291,7 @@ class CouponRepository(private val couponDao: CouponDao) {
                     source = CouponSource.MANUAL,
                     createdAt = System.currentTimeMillis()
                 )
-                val newId = couponDao.insert(coupon)
+                val newId = insertCoupon(coupon)
                 return@withContext ProcessResult.NoCodeFound(newId)
             }
         } catch (e: Exception) {

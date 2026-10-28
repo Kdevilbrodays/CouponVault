@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -249,6 +250,9 @@ fun CouponDetailScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
             ) {
+                val imageFile = if (coupon.imagePath.isNotBlank()) File(coupon.imagePath) else null
+                val hasLocalPhoto = imageFile != null && imageFile.exists()
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -256,55 +260,87 @@ fun CouponDetailScreen(
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color.Black.copy(alpha = 0.05f))
                 ) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(File(coupon.imagePath))
-                            .crossfade(true)
-                            .build(),
-                        contentDescription = "Coupon photo",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(Unit) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    scale = (scale * zoom).coerceIn(1f, 5f)
-                                    val maxPanX = (size.width * (scale - 1f)) / 2f
-                                    val maxPanY = (size.height * (scale - 1f)) / 2f
-                                    offset = Offset(
-                                        x = (offset.x + pan.x).coerceIn(-maxPanX, maxPanX),
-                                        y = (offset.y + pan.y).coerceIn(-maxPanY, maxPanY)
-                                    )
-                                }
-                            }
-                            .graphicsLayer(
-                                scaleX = scale,
-                                scaleY = scale,
-                                translationX = offset.x,
-                                translationY = offset.y
-                            )
-                    )
-
-                    // Zoom reset indicator
-                    if (scale > 1.05f) {
-                        Surface(
-                            shape = PillShape,
-                            color = MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    if (hasLocalPhoto) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(imageFile)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "Coupon photo",
+                            contentScale = ContentScale.Fit,
                             modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(12.dp)
-                                .clickable {
-                                    scale = 1f
-                                    offset = Offset.Zero
+                                .fillMaxSize()
+                                .pointerInput(Unit) {
+                                    detectTransformGestures { _, pan, zoom, _ ->
+                                        scale = (scale * zoom).coerceIn(1f, 5f)
+                                        val maxPanX = (size.width * (scale - 1f)) / 2f
+                                        val maxPanY = (size.height * (scale - 1f)) / 2f
+                                        offset = Offset(
+                                            x = (offset.x + pan.x).coerceIn(-maxPanX, maxPanX),
+                                            y = (offset.y + pan.y).coerceIn(-maxPanY, maxPanY)
+                                        )
+                                    }
                                 }
+                                .graphicsLayer(
+                                    scaleX = scale,
+                                    scaleY = scale,
+                                    translationX = offset.x,
+                                    translationY = offset.y
+                                )
+                        )
+
+                        // Zoom reset indicator
+                        if (scale > 1.05f) {
+                            Surface(
+                                shape = PillShape,
+                                color = MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(12.dp)
+                                    .clickable {
+                                        scale = 1f
+                                        offset = Offset.Zero
+                                    }
+                            ) {
+                                Text(
+                                    text = "Reset (${String.format("%.1f", scale)}x)",
+                                    fontFamily = UiFontFamily,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
                         ) {
+                            Icon(
+                                imageVector = Icons.Outlined.CloudQueue,
+                                contentDescription = "Photo not on device",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
                             Text(
-                                text = "Reset (${String.format("%.1f", scale)}x)",
+                                text = "Photo not on this device yet",
                                 fontFamily = UiFontFamily,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Coupon code and metadata are synced.",
+                                fontFamily = UiFontFamily,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
                             )
                         }
                     }

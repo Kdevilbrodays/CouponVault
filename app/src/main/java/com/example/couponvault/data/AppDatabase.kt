@@ -50,9 +50,31 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE coupons ADD COLUMN syncId TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN modifiedAt INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN deletedAt INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN serverUpdatedAt INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN remoteImagePath TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN imageSha256 TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN imageVariant TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN claimedBy TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE coupons ADD COLUMN claimedAt INTEGER DEFAULT NULL")
+
+        // Backfill modifiedAt with createdAt
+        db.execSQL("UPDATE coupons SET modifiedAt = createdAt WHERE modifiedAt = 0")
+
+        // Backfill syncId with unique random hex string for existing rows
+        db.execSQL("UPDATE coupons SET syncId = lower(hex(randomblob(16))) WHERE syncId = ''")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_coupons_syncId ON coupons (syncId)")
+    }
+}
+
 @Database(
     entities = [Coupon::class],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -60,6 +82,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun couponDao(): CouponDao
 
     companion object {
+        const val SCHEMA_VERSION = 5
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -70,7 +94,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "coupon_vault.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also {
                         INSTANCE = it

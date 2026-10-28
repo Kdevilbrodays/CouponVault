@@ -107,10 +107,21 @@ class FakeCouponDao : CouponDao {
         couponsFlow.map { list -> list.count { it.status == CouponStatus.UNSCANNED } }
 
     override fun getNeedsReviewCount(): Flow<Int> =
-        couponsFlow.map { list -> list.count { it.status == CouponStatus.NEEDS_REVIEW } }
+        couponsFlow.map { list -> list.count { it.status == CouponStatus.NEEDS_REVIEW && it.extractionState == ExtractionState.DONE } }
+
+    override fun getRedeemedCount(): Flow<Int> =
+        couponsFlow.map { list -> list.count { it.status == CouponStatus.REDEEMED } }
+
+    override suspend fun getRedeemedCouponsList(): List<Coupon> =
+        coupons.filter { it.status == CouponStatus.REDEEMED }
 
     override suspend fun countByImagePath(imagePath: String): Int =
         coupons.count { it.imagePath == imagePath }
+
+    override suspend fun deleteAll() {
+        coupons.clear()
+        emit()
+    }
 
     override suspend fun insert(coupon: Coupon): Long {
         val id = if (coupon.id > 0) coupon.id else (coupons.maxOfOrNull { it.id } ?: 0L) + 1L
@@ -128,10 +139,40 @@ class FakeCouponDao : CouponDao {
         }
     }
 
-    override suspend fun updateStatusBulk(ids: List<Long>, status: CouponStatus, redeemedAt: Long?) {
+    override suspend fun getDirtyCoupons(limit: Int): List<Coupon> =
+        coupons.filter { it.dirty }.take(limit)
+
+    override suspend fun getCouponBySyncId(syncId: String): Coupon? =
+        coupons.find { it.syncId == syncId }
+
+    override suspend fun markClean(syncId: String, serverUpdatedAt: Long) {
+        val index = coupons.indexOfFirst { it.syncId == syncId }
+        if (index >= 0) {
+            coupons[index] = coupons[index].copy(dirty = false, serverUpdatedAt = serverUpdatedAt)
+            emit()
+        }
+    }
+
+    override suspend fun purgeBySyncId(syncId: String) {
+        coupons.removeAll { it.syncId == syncId }
+        emit()
+    }
+
+    override suspend fun purgeBySyncIds(syncIds: List<String>) {
+        coupons.removeAll { it.syncId in syncIds }
+        emit()
+    }
+
+    override fun getUnsyncedCount(): Flow<Int> =
+        couponsFlow.map { list -> list.count { it.dirty } }
+
+    override suspend fun getUnsyncedCountSync(): Int =
+        coupons.count { it.dirty }
+
+    override suspend fun updateStatusBulk(ids: List<Long>, status: CouponStatus, redeemedAt: Long?, modifiedAt: Long) {
         for (i in coupons.indices) {
             if (coupons[i].id in ids) {
-                coupons[i] = coupons[i].copy(status = status, redeemedAt = redeemedAt)
+                coupons[i] = coupons[i].copy(status = status, redeemedAt = redeemedAt, modifiedAt = modifiedAt, dirty = true)
             }
         }
         emit()

@@ -33,10 +33,16 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 import android.provider.Settings
+import com.example.couponvault.data.AppDatabase
+import com.example.couponvault.data.BackupValidationResult
 import com.example.couponvault.data.CouponQueueManager
+import com.example.couponvault.data.DataBackupManager
 import com.example.couponvault.data.OverlayPreferences
 import com.example.couponvault.data.QueueState
+import com.example.couponvault.data.RestoreMode
+import com.example.couponvault.data.RestoreResult
 import com.example.couponvault.overlay.FloatingOverlayService
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 
 data class CaptureFeedback(
@@ -53,11 +59,83 @@ data class BatchProgress(
     val title: String = ""
 )
 
+data class BackupProgress(
+    val current: Int,
+    val total: Int,
+    val percent: Int,
+    val isExport: Boolean
+)
+
 class CouponViewModel(
     private val repository: CouponRepository,
     private val queueManager: CouponQueueManager,
-    private val preferences: OverlayPreferences
+    private val preferences: OverlayPreferences,
+    private val syncManager: com.example.couponvault.sync.SyncManager = CouponVaultApplication.instance.syncManager,
+    private val supabaseClient: com.example.couponvault.sync.SupabaseClient = CouponVaultApplication.instance.supabaseClient,
+    private val supabasePreferences: com.example.couponvault.sync.SupabasePreferences = CouponVaultApplication.instance.supabasePreferences
 ) : ViewModel() {
+
+    val syncStatus: StateFlow<com.example.couponvault.sync.SyncStatus> = syncManager.syncStatus
+
+    val userEmail: StateFlow<String?> = supabasePreferences.userEmailFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val supabaseUrl: StateFlow<String> = supabasePreferences.supabaseUrlFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    val supabaseAnonKey: StateFlow<String> = supabasePreferences.supabaseAnonKeyFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    fun syncNow() {
+        syncManager.syncNow()
+    }
+
+    fun signIn(email: String, pass: String, onResult: (Result<com.example.couponvault.sync.AuthSession>) -> Unit) {
+        viewModelScope.launch {
+            val res = supabaseClient.signIn(email, pass)
+            if (res.isSuccess) {
+                syncManager.performSync()
+            }
+            withContext(Dispatchers.Main) {
+                onResult(res)
+            }
+        }
+    }
+
+    fun signUp(email: String, pass: String, onResult: (Result<com.example.couponvault.sync.AuthSession>) -> Unit) {
+        viewModelScope.launch {
+            val res = supabaseClient.signUp(email, pass)
+            if (res.isSuccess) {
+                syncManager.performSync()
+            }
+            withContext(Dispatchers.Main) {
+                onResult(res)
+            }
+        }
+    }
+
+    fun signOut(wipeLocalData: Boolean, onComplete: () -> Unit) {
+        viewModelScope.launch {
+            supabaseClient.signOut()
+            if (wipeLocalData) {
+                repository.hardDeleteAllCoupons()
+            }
+            withContext(Dispatchers.Main) {
+                onComplete()
+            }
+        }
+    }
+
+    fun updateServerConfig(url: String, key: String): String? {
+        val validationError = com.example.couponvault.sync.SupabasePreferences.validateAnonKey(key)
+        if (validationError != null) {
+            return validationError
+        }
+        viewModelScope.launch {
+            supabasePreferences.setCustomServer(url, key)
+        }
+        return null
+    }
 
     val queueState: StateFlow<QueueState> = queueManager.queueState
 
@@ -211,6 +289,13 @@ class CouponViewModel(
         )
 
     val needsReviewCount: StateFlow<Int> = repository.needsReviewCount
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = 0
+        )
+
+    val redeemedCount: StateFlow<Int> = repository.redeemedCount
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -767,16 +852,166 @@ class CouponViewModel(
         return StorageHelper.createShareIntent(context, file, coupon.code)
     }
 
+    // --- Delete All Redeemed ---
+    fun deleteAllRedeemed(onFinished: (Int) -> Unit = {}) {
+        CouponVaultApplication.instance.applicationScope.launch(Dispatchers.IO) {
+            val count = repository.deleteAllRedeemed()
+            withContext(Dispatchers.Main) {
+                _captureFeedback.value = CaptureFeedback(message = "Deleted $count coupons", isSuccess = true)
+                onFinished(count)
+            }
+        }
+    }
+
+    // --- Full App Data Backup & Restore ---
+    private var backupJob: Job? = null
+    private val _backupProgress = MutableStateFlow<BackupProgress?>(null)
+    val backupProgress: StateFlow<BackupProgress?> = _backupProgress.asStateFlow()
+
+    fun cancelBackupProgress() {
+        backupJob?.cancel()
+        backupJob = null
+        _backupProgress.value = null
+    }
+
+    fun exportAppData(
+        context: Context,
+        destinationUri: Uri,
+        onComplete: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        backupJob?.cancel()
+        backupJob = CouponVaultApplication.instance.applicationScope.launch(Dispatchers.IO) {
+            _backupProgress.value = BackupProgress(current = 0, total = 100, percent = 0, isExport = true)
+            try {
+                val outputStream = context.contentResolver.openOutputStream(destinationUri)
+                    ?: error("Could not open destination file")
+
+                val result = outputStream.use { out ->
+                    DataBackupManager.exportBackup(
+                        context = context,
+                        outputStream = out,
+                        repository = repository,
+                        preferences = preferences,
+                        onProgress = { cur, tot, pct ->
+                            _backupProgress.value = BackupProgress(current = cur, total = tot, percent = pct, isExport = true)
+                        }
+                    )
+                }
+
+                withContext(Dispatchers.Main) {
+                    _backupProgress.value = null
+                    if (result.isSuccess) {
+                        _captureFeedback.value = CaptureFeedback(message = "Backup saved", isSuccess = true)
+                        onComplete(true, "Backup saved")
+                    } else {
+                        val err = result.exceptionOrNull()?.localizedMessage ?: "Export failed"
+                        _captureFeedback.value = CaptureFeedback(message = err, isSuccess = false)
+                        onComplete(false, err)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _backupProgress.value = null
+                    val err = e.localizedMessage ?: "Export failed"
+                    _captureFeedback.value = CaptureFeedback(message = err, isSuccess = false)
+                    onComplete(false, err)
+                }
+            }
+        }
+    }
+
+    fun validateBackup(
+        context: Context,
+        sourceUri: Uri,
+        onResult: (Result<BackupValidationResult>) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = try {
+                context.contentResolver.openInputStream(sourceUri)?.use { inStream ->
+                    DataBackupManager.validateBackup(inStream, sourceUri)
+                } ?: Result.failure(Exception("Could not read backup file"))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            withContext(Dispatchers.Main) {
+                onResult(result)
+            }
+        }
+    }
+
+    fun restoreBackup(
+        context: Context,
+        sourceUri: Uri,
+        mode: RestoreMode,
+        onComplete: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        backupJob?.cancel()
+        backupJob = CouponVaultApplication.instance.applicationScope.launch(Dispatchers.IO) {
+            _backupProgress.value = BackupProgress(current = 0, total = 100, percent = 0, isExport = false)
+            val database = AppDatabase.getInstance(context)
+            try {
+                val inputStream = context.contentResolver.openInputStream(sourceUri)
+                    ?: error("Could not open backup file")
+
+                val result = inputStream.use { inStream ->
+                    DataBackupManager.restoreBackup(
+                        context = context,
+                        inputStream = inStream,
+                        mode = mode,
+                        database = database,
+                        preferences = preferences,
+                        onProgress = { cur, tot, pct ->
+                            _backupProgress.value = BackupProgress(current = cur, total = tot, percent = pct, isExport = false)
+                        }
+                    )
+                }
+
+                withContext(Dispatchers.Main) {
+                    _backupProgress.value = null
+                    if (result.isSuccess) {
+                        val r = result.getOrThrow()
+                        val msg = "Imported ${r.importedCount} coupons (skipped ${r.skippedDuplicates} duplicates)"
+                        _captureFeedback.value = CaptureFeedback(message = msg, isSuccess = true)
+                        onComplete(true, msg)
+                    } else {
+                        val reason = result.exceptionOrNull()?.message ?: "unknown error"
+                        val err = "This file isn't a valid CouponVault backup: $reason"
+                        _captureFeedback.value = CaptureFeedback(message = err, isSuccess = false)
+                        onComplete(false, err)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _backupProgress.value = null
+                    val reason = e.message ?: "unknown error"
+                    val err = "This file isn't a valid CouponVault backup: $reason"
+                    _captureFeedback.value = CaptureFeedback(message = err, isSuccess = false)
+                    onComplete(false, err)
+                }
+            }
+        }
+    }
+
     companion object {
         fun provideFactory(
             repository: CouponRepository,
             queueManager: CouponQueueManager,
-            preferences: OverlayPreferences
+            preferences: OverlayPreferences,
+            syncManager: com.example.couponvault.sync.SyncManager = CouponVaultApplication.instance.syncManager,
+            supabaseClient: com.example.couponvault.sync.SupabaseClient = CouponVaultApplication.instance.supabaseClient,
+            supabasePreferences: com.example.couponvault.sync.SupabasePreferences = CouponVaultApplication.instance.supabasePreferences
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return CouponViewModel(repository, queueManager, preferences) as T
+                    return CouponViewModel(
+                        repository,
+                        queueManager,
+                        preferences,
+                        syncManager,
+                        supabaseClient,
+                        supabasePreferences
+                    ) as T
                 }
             }
     }
