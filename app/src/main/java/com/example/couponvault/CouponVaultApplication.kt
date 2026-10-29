@@ -16,6 +16,13 @@ import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
 
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.example.couponvault.overlay.FloatingOverlayService
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+
 class CouponVaultApplication : Application() {
 
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -25,7 +32,9 @@ class CouponVaultApplication : Application() {
     }
 
     val repository: CouponRepository by lazy {
-        CouponRepository(database.couponDao())
+        CouponRepository(database.couponDao()) {
+            supabasePreferences.cachedClockOffset
+        }
     }
 
     val overlayPreferences: OverlayPreferences by lazy {
@@ -36,7 +45,14 @@ class CouponVaultApplication : Application() {
         CouponQueueManager(
             couponDao = database.couponDao(),
             preferences = overlayPreferences,
-            clipboardHelper = AndroidClipboardHelper(this)
+            clipboardHelper = AndroidClipboardHelper(this),
+            supabaseClient = supabaseClient,
+            supabasePreferences = supabasePreferences,
+            repository = repository,
+            context = this,
+            onImmediatePushNeeded = {
+                syncManager.pushNowImmediately()
+            }
         )
     }
 
@@ -61,7 +77,9 @@ class CouponVaultApplication : Application() {
             repository = repository,
             client = supabaseClient,
             preferences = supabasePreferences,
-            scope = applicationScope
+            scope = applicationScope,
+            queueManager = queueManager,
+            context = this
         )
     }
 
@@ -77,6 +95,27 @@ class CouponVaultApplication : Application() {
             com.example.couponvault.sync.SyncWorker.schedulePeriodicSync(this)
         } catch (t: Throwable) {
             Log.w("CouponVault", "SyncWorker scheduling skipped: ${t.message}")
+        }
+
+        // Monitor floating overlay service state for sync realtime connection lifecycle
+        FloatingOverlayService.isRunning.onEach { running ->
+            syncManager.setOverlayRunning(running)
+        }.launchIn(applicationScope)
+
+        // Track process lifecycle: connect/pull on foreground, disconnect & enqueue expedited push on onStop
+        try {
+            ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+                override fun onStart(owner: LifecycleOwner) {
+                    syncManager.onAppForegrounded()
+                }
+
+                override fun onStop(owner: LifecycleOwner) {
+                    syncManager.onAppBackgrounded()
+                    com.example.couponvault.sync.SyncWorker.enqueueExpeditedSync(this@CouponVaultApplication)
+                }
+            })
+        } catch (t: Throwable) {
+            Log.w("CouponVault", "ProcessLifecycleOwner observer registration skipped: ${t.message}")
         }
     }
 

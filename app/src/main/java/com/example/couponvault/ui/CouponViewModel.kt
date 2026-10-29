@@ -86,8 +86,113 @@ class CouponViewModel(
     val supabaseAnonKey: StateFlow<String> = supabasePreferences.supabaseAnonKeyFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
+    val isRealtimeConnected: StateFlow<Boolean> = syncManager.isRealtimeConnected
+
+    val lastPushTime: StateFlow<Long?> = supabasePreferences.lastPushTimeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val lastPullTime: StateFlow<Long?> = supabasePreferences.lastPullTimeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val clockOffset: StateFlow<Long> = supabasePreferences.clockOffsetFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+
+    val lastError: StateFlow<String?> = supabasePreferences.lastErrorFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val photoSyncEnabled: StateFlow<Boolean> = supabasePreferences.photoSyncEnabledFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val photoWifiOnly: StateFlow<Boolean> = supabasePreferences.photoWifiOnlyFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val photoUploadQuality: StateFlow<String> = supabasePreferences.photoUploadQualityFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "original")
+
+    val downloadingSyncIds: StateFlow<Set<String>> = (syncManager.photoDownloadManager?.downloadingSyncIds
+        ?: MutableStateFlow(emptySet()))
+
+    val uploadingSyncIds: StateFlow<Set<String>> = com.example.couponvault.sync.PhotoUploadWorker.uploadingSyncIds
+
+    val isDownloadingAllPhotos: StateFlow<Boolean> = (syncManager.photoDownloadManager?.isDownloadingAll
+        ?: MutableStateFlow(false))
+
+    val downloadAllPhotosProgress: StateFlow<Pair<Int, Int>?> = (syncManager.photoDownloadManager?.downloadAllProgress
+        ?: MutableStateFlow(null))
+
+    fun setPhotoSyncEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            supabasePreferences.setPhotoSyncEnabled(enabled)
+            if (enabled) {
+                com.example.couponvault.sync.PhotoUploadWorker.enqueue(
+                    CouponVaultApplication.instance,
+                    supabasePreferences.photoWifiOnlyFlow.first()
+                )
+            }
+        }
+    }
+
+    fun setPhotoWifiOnly(wifiOnly: Boolean) {
+        viewModelScope.launch {
+            supabasePreferences.setPhotoWifiOnly(wifiOnly)
+            com.example.couponvault.sync.PhotoUploadWorker.enqueue(CouponVaultApplication.instance, wifiOnly)
+        }
+    }
+
+    fun setPhotoUploadQuality(quality: String) {
+        viewModelScope.launch {
+            supabasePreferences.setPhotoUploadQuality(quality)
+        }
+    }
+
+    fun downloadPhoto(coupon: Coupon, onComplete: ((Result<File>) -> Unit)? = null) {
+        viewModelScope.launch {
+            val manager = syncManager.photoDownloadManager
+            if (manager != null) {
+                val res = manager.downloadPhoto(coupon)
+                withContext(Dispatchers.Main) {
+                    onComplete?.invoke(res)
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    onComplete?.invoke(Result.failure(IllegalStateException("Photo download manager not available")))
+                }
+            }
+        }
+    }
+
+    private val lazyDownloadRequested = mutableSetOf<String>()
+
+    fun enqueueLazyPhotoDownload(coupon: Coupon) {
+        if (coupon.remoteImagePath.isNullOrBlank()) return
+        if (coupon.imagePath.isNotBlank() && File(coupon.imagePath).exists()) return
+        if (lazyDownloadRequested.contains(coupon.syncId)) return
+        lazyDownloadRequested.add(coupon.syncId)
+        viewModelScope.launch {
+            syncManager.photoDownloadManager?.downloadPhoto(coupon)
+        }
+    }
+
+    fun downloadAllPhotos(onProgress: ((current: Int, total: Int) -> Unit)? = null, onComplete: ((Int) -> Unit)? = null) {
+        viewModelScope.launch {
+            val count = syncManager.photoDownloadManager?.downloadAllPhotos(onProgress) ?: 0
+            withContext(Dispatchers.Main) {
+                onComplete?.invoke(count)
+            }
+        }
+    }
+
     fun syncNow() {
         syncManager.syncNow()
+    }
+
+    fun performFullResync(onResult: (Result<com.example.couponvault.sync.ReconcileSummary>) -> Unit) {
+        viewModelScope.launch {
+            val res = syncManager.performFullReconcile()
+            withContext(Dispatchers.Main) {
+                onResult(res)
+            }
+        }
     }
 
     fun signIn(email: String, pass: String, onResult: (Result<com.example.couponvault.sync.AuthSession>) -> Unit) {

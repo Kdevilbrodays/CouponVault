@@ -7,8 +7,10 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 val Context.overlayDataStore: DataStore<Preferences> by preferencesDataStore(name = "coupon_vault_overlay_prefs")
@@ -17,12 +19,35 @@ open class OverlayPreferences(context: Context? = null) {
     private val appContext: Context? = context?.applicationContext
 
     companion object {
+        val KEY_DEVICE_ID = stringPreferencesKey("device_id")
         val KEY_CURRENT_COUPON_ID = longPreferencesKey("current_coupon_id")
         val KEY_PREVIOUS_COUPON_ID = longPreferencesKey("previous_coupon_id")
         val KEY_AUTO_MARK_REDEEMED = booleanPreferencesKey("auto_mark_redeemed")
         val KEY_OVERLAY_ENABLED = booleanPreferencesKey("overlay_enabled")
         val KEY_OVERLAY_X = intPreferencesKey("overlay_x")
         val KEY_OVERLAY_Y = intPreferencesKey("overlay_y")
+    }
+
+    @Volatile
+    private var cachedDeviceId: String? = null
+
+    open val deviceIdFlow: Flow<String> = appContext?.overlayDataStore?.data?.map { prefs ->
+        prefs[KEY_DEVICE_ID] ?: ""
+    } ?: kotlinx.coroutines.flow.emptyFlow()
+
+    open suspend fun getOrCreateDeviceId(): String {
+        cachedDeviceId?.let { return it }
+        val stored = appContext?.overlayDataStore?.data?.first()?.get(KEY_DEVICE_ID)
+        if (!stored.isNullOrBlank()) {
+            cachedDeviceId = stored
+            return stored
+        }
+        val newId = java.util.UUID.randomUUID().toString()
+        appContext?.overlayDataStore?.edit { prefs ->
+            prefs[KEY_DEVICE_ID] = newId
+        }
+        cachedDeviceId = newId
+        return newId
     }
 
     open val currentCouponIdFlow: Flow<Long?> = appContext?.overlayDataStore?.data?.map { prefs ->

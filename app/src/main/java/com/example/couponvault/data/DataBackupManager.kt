@@ -469,15 +469,12 @@ object DataBackupManager {
             // 4. Perform database operation in atomic transaction
             database.withTransaction {
                 if (mode == RestoreMode.REPLACE) {
-                    val existing = dao.getAllCouponsList()
-                    dao.deleteAll()
-                    // Delete old orphan photos
-                    for (old in existing) {
-                        val file = File(old.imagePath)
-                        if (file.exists() && dao.countByImagePath(old.imagePath) == 0) {
-                            file.delete()
-                        }
-                    }
+                    val now = System.currentTimeMillis()
+                    // Hard-delete unsynced coupons
+                    dao.deleteUnsyncedCoupons()
+                    // Tombstone previously synced coupons so deletions propagate to other devices
+                    dao.tombstoneSyncedCoupons(now)
+
 
                     for (item in importedItems) {
                         val permanentFile = getPermanentPhotoFile(item.photoFileName)

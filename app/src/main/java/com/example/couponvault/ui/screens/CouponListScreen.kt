@@ -764,6 +764,7 @@ fun CouponListScreen(
                             clipboard.setPrimaryClip(ClipData.newPlainText("Coupon Code", code))
                             Toast.makeText(context, "Copied: $code", Toast.LENGTH_SHORT).show()
                         },
+                        onLazyDownloadPhoto = { viewModel.enqueueLazyPhotoDownload(it) },
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
                     )
                 }
@@ -1051,7 +1052,8 @@ fun CouponItemCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onCopyCode: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onLazyDownloadPhoto: ((Coupon) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val borderColor = when {
@@ -1102,6 +1104,13 @@ fun CouponItemCard(
             val imageFile = if (coupon.imagePath.isNotBlank()) File(coupon.imagePath) else null
             val hasLocalFile = imageFile != null && imageFile.exists()
 
+            // Non-blocking lazy download trigger for rows with remote image but missing local file
+            LaunchedEffect(coupon.syncId, coupon.remoteImagePath) {
+                if (!hasLocalFile && !coupon.remoteImagePath.isNullOrBlank()) {
+                    onLazyDownloadPhoto?.invoke(coupon)
+                }
+            }
+
             Box(
                 modifier = Modifier
                     .size(72.dp)
@@ -1122,22 +1131,25 @@ fun CouponItemCard(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
+                    val hasRemote = !coupon.remoteImagePath.isNullOrBlank()
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.padding(4.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.CloudQueue,
-                            contentDescription = "Photo not on device",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            contentDescription = if (hasRemote) "Photo in cloud" else "No photo",
+                            tint = if (hasRemote) MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "No photo",
+                            text = if (hasRemote) "In cloud" else "No photo",
                             fontFamily = UiFontFamily,
                             fontSize = 9.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            color = if (hasRemote) MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                             textAlign = TextAlign.Center
                         )
                     }

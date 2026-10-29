@@ -192,6 +192,48 @@ class FakeCouponDao : CouponDao {
         coupons.removeAll { it.id in ids }
         emit()
     }
+
+    override suspend fun getAllCouponsIncludingTombstones(): List<Coupon> {
+        return coupons.toList()
+    }
+
+    override suspend fun deleteUnsyncedCoupons() {
+        coupons.removeAll { it.serverUpdatedAt == null }
+        emit()
+    }
+
+    override suspend fun tombstoneSyncedCoupons(now: Long) {
+        for (i in coupons.indices) {
+            if (coupons[i].serverUpdatedAt != null) {
+                coupons[i] = coupons[i].copy(deletedAt = now, modifiedAt = now, dirty = true)
+            }
+        }
+        emit()
+    }
+
+    override suspend fun getCouponsNeedingPhotoUpload(): List<Coupon> {
+        return coupons.filter { it.serverUpdatedAt != null && it.deletedAt == null && it.remoteImagePath.isNullOrBlank() && it.imagePath.isNotBlank() }
+    }
+
+    override suspend fun getCouponsNeedingPhotoDownload(): List<Coupon> {
+        return coupons.filter { it.deletedAt == null && !it.remoteImagePath.isNullOrBlank() && it.imagePath.isBlank() }
+    }
+
+    override suspend fun updatePhotoUploadSuccess(syncId: String, remoteImagePath: String, imageSha256: String, imageVariant: String, modifiedAt: Long) {
+        val idx = coupons.indexOfFirst { it.syncId == syncId }
+        if (idx != -1) {
+            coupons[idx] = coupons[idx].copy(remoteImagePath = remoteImagePath, imageSha256 = imageSha256, imageVariant = imageVariant, dirty = true, modifiedAt = modifiedAt)
+            emit()
+        }
+    }
+
+    override suspend fun updateLocalImagePath(syncId: String, localImagePath: String) {
+        val idx = coupons.indexOfFirst { it.syncId == syncId }
+        if (idx != -1) {
+            coupons[idx] = coupons[idx].copy(imagePath = localImagePath)
+            emit()
+        }
+    }
 }
 
 class CouponQueueManagerTest {

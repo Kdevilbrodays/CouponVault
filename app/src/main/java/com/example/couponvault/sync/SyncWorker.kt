@@ -1,10 +1,14 @@
 package com.example.couponvault.sync
 
 import android.content.Context
+import android.util.Log
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -17,7 +21,8 @@ class SyncWorker(
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
-        private const val WORK_NAME = "coupon_vault_sync_work"
+        private const val PERIODIC_WORK_NAME = "coupon_vault_sync_work"
+        private const val EXPEDITED_WORK_NAME = "coupon_vault_expedited_push"
 
         fun schedulePeriodicSync(context: Context) {
             val constraints = Constraints.Builder()
@@ -32,10 +37,31 @@ class SyncWorker(
                 .build()
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-                WORK_NAME,
+                PERIODIC_WORK_NAME,
                 ExistingPeriodicWorkPolicy.KEEP,
                 syncWorkRequest
             )
+        }
+
+        fun enqueueExpeditedSync(context: Context) {
+            try {
+                val constraints = Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+
+                val syncWorkRequest = OneTimeWorkRequestBuilder<SyncWorker>()
+                    .setConstraints(constraints)
+                    .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                    .build()
+
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    EXPEDITED_WORK_NAME,
+                    ExistingWorkPolicy.REPLACE,
+                    syncWorkRequest
+                )
+            } catch (t: Throwable) {
+                Log.w("SyncWorker", "Expedited sync enqueue skipped: ${t.message}")
+            }
         }
     }
 

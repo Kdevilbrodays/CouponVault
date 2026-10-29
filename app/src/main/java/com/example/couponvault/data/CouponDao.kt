@@ -66,8 +66,17 @@ interface CouponDao {
 
     // --- Sync Specific Queries ---
 
-    @Query("SELECT * FROM coupons WHERE dirty = 1 ORDER BY modifiedAt ASC LIMIT :limit")
+    @Query("SELECT * FROM coupons WHERE dirty = 1 AND extractionState = 'DONE' ORDER BY modifiedAt ASC LIMIT :limit")
     suspend fun getDirtyCoupons(limit: Int): List<Coupon>
+
+    @Query("SELECT * FROM coupons")
+    suspend fun getAllCouponsIncludingTombstones(): List<Coupon>
+
+    @Query("DELETE FROM coupons WHERE serverUpdatedAt IS NULL")
+    suspend fun deleteUnsyncedCoupons()
+
+    @Query("UPDATE coupons SET deletedAt = :now, modifiedAt = :now, dirty = 1 WHERE serverUpdatedAt IS NOT NULL AND deletedAt IS NULL")
+    suspend fun tombstoneSyncedCoupons(now: Long)
 
     @Query("SELECT * FROM coupons WHERE syncId = :syncId LIMIT 1")
     suspend fun getCouponBySyncId(syncId: String): Coupon?
@@ -81,10 +90,10 @@ interface CouponDao {
     @Query("DELETE FROM coupons WHERE syncId IN (:syncIds)")
     suspend fun purgeBySyncIds(syncIds: List<String>)
 
-    @Query("SELECT COUNT(*) FROM coupons WHERE dirty = 1")
+    @Query("SELECT COUNT(*) FROM coupons WHERE dirty = 1 AND extractionState = 'DONE'")
     fun getUnsyncedCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM coupons WHERE dirty = 1")
+    @Query("SELECT COUNT(*) FROM coupons WHERE dirty = 1 AND extractionState = 'DONE'")
     suspend fun getUnsyncedCountSync(): Int
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
@@ -104,4 +113,18 @@ interface CouponDao {
 
     @Query("DELETE FROM coupons WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
+
+    // --- Photo Sync Queries ---
+
+    @Query("SELECT * FROM coupons WHERE serverUpdatedAt IS NOT NULL AND deletedAt IS NULL AND (remoteImagePath IS NULL OR remoteImagePath = '') AND imagePath IS NOT NULL AND imagePath != ''")
+    suspend fun getCouponsNeedingPhotoUpload(): List<Coupon>
+
+    @Query("SELECT * FROM coupons WHERE deletedAt IS NULL AND remoteImagePath IS NOT NULL AND remoteImagePath != '' AND (imagePath = '' OR imagePath IS NULL)")
+    suspend fun getCouponsNeedingPhotoDownload(): List<Coupon>
+
+    @Query("UPDATE coupons SET remoteImagePath = :remoteImagePath, imageSha256 = :imageSha256, imageVariant = :imageVariant, dirty = 1, modifiedAt = :modifiedAt WHERE syncId = :syncId")
+    suspend fun updatePhotoUploadSuccess(syncId: String, remoteImagePath: String, imageSha256: String, imageVariant: String, modifiedAt: Long)
+
+    @Query("UPDATE coupons SET imagePath = :localImagePath WHERE syncId = :syncId")
+    suspend fun updateLocalImagePath(syncId: String, localImagePath: String)
 }

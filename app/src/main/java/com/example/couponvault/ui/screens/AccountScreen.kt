@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
@@ -46,6 +47,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -91,6 +93,11 @@ fun AccountScreen(
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val supabaseUrl by viewModel.supabaseUrl.collectAsStateWithLifecycle()
     val supabaseAnonKey by viewModel.supabaseAnonKey.collectAsStateWithLifecycle()
+    val isRealtimeConnected by viewModel.isRealtimeConnected.collectAsStateWithLifecycle()
+    val lastPushTime by viewModel.lastPushTime.collectAsStateWithLifecycle()
+    val lastPullTime by viewModel.lastPullTime.collectAsStateWithLifecycle()
+    val clockOffset by viewModel.clockOffset.collectAsStateWithLifecycle()
+    val lastError by viewModel.lastError.collectAsStateWithLifecycle()
 
     var showSignOutDialog by remember { mutableStateOf(false) }
 
@@ -137,9 +144,17 @@ fun AccountScreen(
                 SignedInSection(
                     email = userEmail ?: "",
                     syncStatus = syncStatus,
+                    isRealtimeConnected = isRealtimeConnected,
+                    lastPushTime = lastPushTime,
+                    lastPullTime = lastPullTime,
+                    clockOffset = clockOffset,
+                    lastError = lastError,
                     onSyncNow = { viewModel.syncNow() },
+                    onFullResync = { callback -> viewModel.performFullResync(callback) },
                     onRequestSignOut = { showSignOutDialog = true }
                 )
+
+                PhotosSection(viewModel = viewModel)
             } else {
                 SignedOutSection(
                     viewModel = viewModel,
@@ -176,9 +191,18 @@ fun AccountScreen(
 private fun SignedInSection(
     email: String,
     syncStatus: com.example.couponvault.sync.SyncStatus,
+    isRealtimeConnected: Boolean,
+    lastPushTime: Long?,
+    lastPullTime: Long?,
+    clockOffset: Long,
+    lastError: String?,
     onSyncNow: () -> Unit,
+    onFullResync: ((Result<com.example.couponvault.sync.ReconcileSummary>) -> Unit) -> Unit,
     onRequestSignOut: () -> Unit
 ) {
+    var isResyncing by remember { mutableStateOf(false) }
+    var resyncMessage by remember { mutableStateOf<String?>(null) }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = CardShape,
@@ -186,6 +210,7 @@ private fun SignedInSection(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
+            // User header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -222,100 +247,140 @@ private fun SignedInSection(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
-            }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Sync Status Row
-            val statusColor = when (syncStatus.state) {
-                SyncState.SYNCING -> MaterialTheme.colorScheme.primary
-                SyncState.OFFLINE -> MaterialTheme.colorScheme.onSurfaceVariant
-                SyncState.ERROR -> BrickError
-                SyncState.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
-            }
-
-            val statusText = when (syncStatus.state) {
-                SyncState.SYNCING -> "Syncing with cloud..."
-                SyncState.OFFLINE -> "Offline • Changes queued"
-                SyncState.ERROR -> syncStatus.errorMessage ?: "Sync error"
-                SyncState.IDLE -> {
-                    val last = syncStatus.lastSyncedAt
-                    if (last != null && last > 0) {
-                        val formatted = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(last))
-                        "Last synced: $formatted"
-                    } else {
-                        "Ready to sync"
-                    }
-                }
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                when (syncStatus.state) {
-                    SyncState.SYNCING -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = statusColor
-                        )
-                    }
-                    SyncState.OFFLINE -> {
-                        Icon(
-                            imageVector = Icons.Default.CloudOff,
-                            contentDescription = null,
-                            tint = statusColor,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    SyncState.ERROR -> {
-                        Icon(
-                            imageVector = Icons.Default.ErrorOutline,
-                            contentDescription = null,
-                            tint = statusColor,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    SyncState.IDLE -> {
-                        Icon(
-                            imageVector = Icons.Default.CloudDone,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Text(
-                    text = statusText,
-                    fontFamily = UiFontFamily,
-                    fontSize = 13.sp,
-                    color = statusColor
-                )
-
-                if (syncStatus.pendingCount > 0) {
-                    Spacer(modifier = Modifier.width(6.dp))
+                OutlinedButton(
+                    onClick = onRequestSignOut,
+                    shape = ButtonShape,
+                    modifier = Modifier.testTag("sign_out_button")
+                ) {
                     Text(
-                        text = "• ${syncStatus.pendingCount} pending",
+                        text = "Sign out",
                         fontFamily = UiFontFamily,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(18.dp))
 
+            // Sync Health & Diagnostics Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Sync Health & Diagnostics",
+                    fontFamily = TitleFontFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                // Realtime Connection Badge
+                Surface(
+                    shape = PillShape,
+                    color = if (isRealtimeConnected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    modifier = Modifier.testTag("realtime_status_badge")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(PillShape)
+                                .background(
+                                    if (isRealtimeConnected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isRealtimeConnected) "Realtime active" else "Realtime disconnected",
+                            fontFamily = UiFontFamily,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 11.sp,
+                            color = if (isRealtimeConnected) MaterialTheme.colorScheme.onPrimaryContainer
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Diagnostics Details Card
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = FieldShape,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SyncMetricRow(
+                        label = "Realtime status",
+                        value = if (isRealtimeConnected) "Connected (push + live pull)" else "Disconnected (30s polling fallback)"
+                    )
+                    SyncMetricRow(
+                        label = "Last push",
+                        value = formatTimestamp(lastPushTime)
+                    )
+                    SyncMetricRow(
+                        label = "Last pull",
+                        value = formatTimestamp(lastPullTime)
+                    )
+                    SyncMetricRow(
+                        label = "Pending changes",
+                        value = "${syncStatus.pendingCount} unsynced local rows"
+                    )
+                    SyncMetricRow(
+                        label = "Clock offset",
+                        value = "${if (clockOffset >= 0) "+$clockOffset" else "$clockOffset"} ms" +
+                                if (clockOffset == 0L) " (synchronized)" else " relative to server"
+                    )
+                    SyncMetricRow(
+                        label = "Last error",
+                        value = lastError ?: "None",
+                        isError = lastError != null && lastError.isNotBlank()
+                    )
+                }
+            }
+
+            if (resyncMessage != null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = FieldShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                ) {
+                    Text(
+                        text = resyncMessage ?: "",
+                        fontFamily = UiFontFamily,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Action Buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Button(
                     onClick = onSyncNow,
-                    enabled = syncStatus.state != SyncState.SYNCING,
+                    enabled = syncStatus.state != SyncState.SYNCING && !isResyncing,
                     shape = ButtonShape,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
@@ -332,26 +397,89 @@ private fun SignedInSection(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (syncStatus.state == SyncState.SYNCING) "Syncing..." else "Sync now",
+                        text = if (syncStatus.state == SyncState.SYNCING && !isResyncing) "Syncing..." else "Sync now",
                         fontFamily = UiFontFamily,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
 
                 OutlinedButton(
-                    onClick = onRequestSignOut,
+                    onClick = {
+                        isResyncing = true
+                        resyncMessage = null
+                        onFullResync { result ->
+                            isResyncing = false
+                            if (result.isSuccess) {
+                                val s = result.getOrThrow()
+                                resyncMessage = "Full resync complete: Removed ${s.removedCount}, added ${s.addedCount}"
+                            } else {
+                                resyncMessage = "Full resync failed: ${result.exceptionOrNull()?.message}"
+                            }
+                        }
+                    },
+                    enabled = syncStatus.state != SyncState.SYNCING && !isResyncing,
                     shape = ButtonShape,
-                    modifier = Modifier.testTag("sign_out_button")
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("full_resync_button")
                 ) {
+                    if (isResyncing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
                     Text(
-                        text = "Sign out",
+                        text = if (isResyncing) "Resyncing..." else "Full resync",
                         fontFamily = UiFontFamily,
-                        color = MaterialTheme.colorScheme.onSurface
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SyncMetricRow(
+    label: String,
+    value: String,
+    isError: Boolean = false
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            fontFamily = UiFontFamily,
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            fontFamily = UiFontFamily,
+            fontSize = 12.sp,
+            fontWeight = if (isError) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (isError) BrickError else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+private fun formatTimestamp(timestamp: Long?): String {
+    if (timestamp == null || timestamp <= 0) return "Never"
+    val sdf = SimpleDateFormat("h:mm:ss a", Locale.getDefault())
+    return sdf.format(Date(timestamp))
 }
 
 @Composable
@@ -775,4 +903,240 @@ private fun SignOutConfirmationDialog(
         shape = CardShape,
         containerColor = MaterialTheme.colorScheme.surface
     )
+}
+
+@Composable
+private fun PhotosSection(
+    viewModel: CouponViewModel
+) {
+    val photoSyncEnabled by viewModel.photoSyncEnabled.collectAsStateWithLifecycle()
+    val photoWifiOnly by viewModel.photoWifiOnly.collectAsStateWithLifecycle()
+    val photoUploadQuality by viewModel.photoUploadQuality.collectAsStateWithLifecycle()
+    val isDownloadingAll by viewModel.isDownloadingAllPhotos.collectAsStateWithLifecycle()
+    val downloadProgress by viewModel.downloadAllPhotosProgress.collectAsStateWithLifecycle()
+
+    var downloadStatusText by remember { mutableStateOf<String?>(null) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("photos_sync_card"),
+        shape = CardShape,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CloudQueue,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Photos",
+                    fontFamily = TitleFontFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // [Sync photos] toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Sync photos",
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Back up and sync coupon photos with your private cloud vault",
+                        fontFamily = UiFontFamily,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = photoSyncEnabled,
+                    onCheckedChange = { viewModel.setPhotoSyncEnabled(it) },
+                    modifier = Modifier.testTag("photo_sync_toggle")
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // [Wi-Fi only] toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Wi-Fi only",
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Upload photos only when connected to an unmetered Wi-Fi network",
+                        fontFamily = UiFontFamily,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = photoWifiOnly,
+                    onCheckedChange = { viewModel.setPhotoWifiOnly(it) },
+                    enabled = photoSyncEnabled,
+                    modifier = Modifier.testTag("photo_wifi_only_toggle")
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // [Upload quality]: Original (default) or Reduced
+            Text(
+                text = "Upload quality",
+                fontFamily = UiFontFamily,
+                fontWeight = FontWeight.Medium,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                QualityChoicePill(
+                    label = "Original",
+                    selected = photoUploadQuality == "original",
+                    enabled = photoSyncEnabled,
+                    onClick = { viewModel.setPhotoUploadQuality("original") },
+                    modifier = Modifier.weight(1f).testTag("quality_original_button")
+                )
+                QualityChoicePill(
+                    label = "Reduced",
+                    selected = photoUploadQuality == "reduced",
+                    enabled = photoSyncEnabled,
+                    onClick = { viewModel.setPhotoUploadQuality("reduced") },
+                    modifier = Modifier.weight(1f).testTag("quality_reduced_button")
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Free plans have limited storage. Reduced uploads save space, and other devices will get the reduced copy.",
+                fontFamily = UiFontFamily,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 16.sp
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // [Download all photos] button with progress count
+            OutlinedButton(
+                onClick = {
+                    downloadStatusText = null
+                    viewModel.downloadAllPhotos(
+                        onProgress = { _, _ -> },
+                        onComplete = { count ->
+                            downloadStatusText = if (count > 0) "Downloaded $count photo${if (count != 1) "s" else ""}." else "All photos are already on this device."
+                        }
+                    )
+                },
+                enabled = !isDownloadingAll,
+                modifier = Modifier.fillMaxWidth().testTag("download_all_photos_button"),
+                shape = ButtonShape
+            ) {
+                if (isDownloadingAll) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    val progress = downloadProgress
+                    val progressLabel = if (progress != null) "Downloading ${progress.first}/${progress.second}..." else "Downloading..."
+                    Text(
+                        text = progressLabel,
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Medium
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.FileDownload,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Download all photos",
+                        fontFamily = UiFontFamily,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            if (!downloadStatusText.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = downloadStatusText ?: "",
+                    fontFamily = UiFontFamily,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun QualityChoicePill(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = PillShape,
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+        ),
+        modifier = modifier
+    ) {
+        Box(
+            modifier = Modifier.padding(vertical = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                fontFamily = UiFontFamily,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 13.sp,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
 }

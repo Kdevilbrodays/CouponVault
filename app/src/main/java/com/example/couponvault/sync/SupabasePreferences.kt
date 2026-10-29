@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -35,6 +36,14 @@ class SupabasePreferences(private val context: Context) {
         val KEY_USER_ID = stringPreferencesKey("supabase_user_id")
         val KEY_PULL_CURSOR = stringPreferencesKey("supabase_pull_cursor")
         val KEY_LAST_SYNCED = longPreferencesKey("supabase_last_synced")
+        val KEY_CLOCK_OFFSET = longPreferencesKey("supabase_clock_offset")
+        val KEY_LAST_FULL_RECONCILE = longPreferencesKey("supabase_last_full_reconcile")
+        val KEY_LAST_PUSH_TIME = longPreferencesKey("supabase_last_push_time")
+        val KEY_LAST_PULL_TIME = longPreferencesKey("supabase_last_pull_time")
+        val KEY_LAST_ERROR = stringPreferencesKey("supabase_last_error")
+        val KEY_PHOTO_SYNC_ENABLED = booleanPreferencesKey("photo_sync_enabled")
+        val KEY_PHOTO_WIFI_ONLY = booleanPreferencesKey("photo_wifi_only")
+        val KEY_PHOTO_UPLOAD_QUALITY = stringPreferencesKey("photo_upload_quality")
 
         /**
          * Validates that the key is an anon/public key and NOT a service_role key.
@@ -166,6 +175,74 @@ class SupabasePreferences(private val context: Context) {
             prefs.remove(KEY_USER_ID)
             prefs.remove(KEY_PULL_CURSOR)
             prefs.remove(KEY_LAST_SYNCED)
+            prefs.remove(KEY_LAST_PUSH_TIME)
+            prefs.remove(KEY_LAST_PULL_TIME)
+            prefs.remove(KEY_LAST_ERROR)
+        }
+    }
+
+    @Volatile
+    var cachedClockOffset: Long = 0L
+        private set
+
+    val clockOffsetFlow: Flow<Long> = context.supabaseDataStore.data.map { prefs ->
+        val offset = prefs[KEY_CLOCK_OFFSET] ?: 0L
+        cachedClockOffset = offset
+        offset
+    }
+
+    val lastFullReconcileFlow: Flow<Long?> = context.supabaseDataStore.data.map { prefs ->
+        prefs[KEY_LAST_FULL_RECONCILE]
+    }
+
+    val lastPushTimeFlow: Flow<Long?> = context.supabaseDataStore.data.map { prefs ->
+        prefs[KEY_LAST_PUSH_TIME]
+    }
+
+    val lastPullTimeFlow: Flow<Long?> = context.supabaseDataStore.data.map { prefs ->
+        prefs[KEY_LAST_PULL_TIME]
+    }
+
+    val lastErrorFlow: Flow<String?> = context.supabaseDataStore.data.map { prefs ->
+        prefs[KEY_LAST_ERROR]
+    }
+
+    suspend fun getClockOffset(): Long {
+        return context.supabaseDataStore.data.first()[KEY_CLOCK_OFFSET] ?: 0L
+    }
+
+    suspend fun setClockOffset(offset: Long) {
+        cachedClockOffset = offset
+        context.supabaseDataStore.edit { prefs ->
+            prefs[KEY_CLOCK_OFFSET] = offset
+        }
+    }
+
+    suspend fun setLastPushTime(timestamp: Long) {
+        context.supabaseDataStore.edit { prefs ->
+            prefs[KEY_LAST_PUSH_TIME] = timestamp
+        }
+    }
+
+    suspend fun setLastPullTime(timestamp: Long) {
+        context.supabaseDataStore.edit { prefs ->
+            prefs[KEY_LAST_PULL_TIME] = timestamp
+        }
+    }
+
+    suspend fun setLastFullReconcile(timestamp: Long) {
+        context.supabaseDataStore.edit { prefs ->
+            prefs[KEY_LAST_FULL_RECONCILE] = timestamp
+        }
+    }
+
+    suspend fun setLastError(error: String?) {
+        context.supabaseDataStore.edit { prefs ->
+            if (error != null) {
+                prefs[KEY_LAST_ERROR] = error
+            } else {
+                prefs.remove(KEY_LAST_ERROR)
+            }
         }
     }
 
@@ -178,6 +255,36 @@ class SupabasePreferences(private val context: Context) {
     suspend fun setLastSynced(timestamp: Long) {
         context.supabaseDataStore.edit { prefs ->
             prefs[KEY_LAST_SYNCED] = timestamp
+        }
+    }
+
+    val photoSyncEnabledFlow: Flow<Boolean> = context.supabaseDataStore.data.map { prefs ->
+        prefs[KEY_PHOTO_SYNC_ENABLED] ?: true
+    }
+
+    val photoWifiOnlyFlow: Flow<Boolean> = context.supabaseDataStore.data.map { prefs ->
+        prefs[KEY_PHOTO_WIFI_ONLY] ?: true
+    }
+
+    val photoUploadQualityFlow: Flow<String> = context.supabaseDataStore.data.map { prefs ->
+        prefs[KEY_PHOTO_UPLOAD_QUALITY] ?: "original"
+    }
+
+    suspend fun setPhotoSyncEnabled(enabled: Boolean) {
+        context.supabaseDataStore.edit { prefs ->
+            prefs[KEY_PHOTO_SYNC_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setPhotoWifiOnly(wifiOnly: Boolean) {
+        context.supabaseDataStore.edit { prefs ->
+            prefs[KEY_PHOTO_WIFI_ONLY] = wifiOnly
+        }
+    }
+
+    suspend fun setPhotoUploadQuality(quality: String) {
+        context.supabaseDataStore.edit { prefs ->
+            prefs[KEY_PHOTO_UPLOAD_QUALITY] = quality
         }
     }
 }

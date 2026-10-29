@@ -87,6 +87,9 @@ class BackgroundExtractionManager(
         if (!file.exists()) {
             // Original file is missing, mark as DONE
             couponDao.update(coupon.copy(extractionState = ExtractionState.DONE))
+            try {
+                com.example.couponvault.CouponVaultApplication.instance.syncManager.pushNowImmediately()
+            } catch (_: Throwable) {}
             return
         }
 
@@ -124,6 +127,9 @@ class BackgroundExtractionManager(
                 )
                 couponDao.update(updated)
                 _events.emit(ExtractionEvent.CodeFound(coupon.id, code))
+                try {
+                    com.example.couponvault.CouponVaultApplication.instance.syncManager.pushNowImmediately()
+                } catch (_: Throwable) {}
             }
         } else {
             // None found -> stays NEEDS_REVIEW, extractionState DONE
@@ -135,6 +141,9 @@ class BackgroundExtractionManager(
             )
             couponDao.update(updated)
             _events.emit(ExtractionEvent.NoCodeFound(coupon.id))
+            try {
+                com.example.couponvault.CouponVaultApplication.instance.syncManager.pushNowImmediately()
+            } catch (_: Throwable) {}
         }
     }
 }

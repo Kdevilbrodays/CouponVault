@@ -23,10 +23,18 @@ sealed interface ProcessResult {
     data class Error(val message: String) : ProcessResult
 }
 
-class CouponRepository(private val couponDao: CouponDao) {
+class CouponRepository(
+    private val couponDao: CouponDao,
+    private val clockOffsetProvider: () -> Long = { 0L }
+) {
+
+    fun currentSyncedTime(): Long = System.currentTimeMillis() + clockOffsetProvider()
 
     private val _localDataChanged = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val localDataChanged = _localDataChanged.asSharedFlow()
+
+    private val _immediatePushRequested = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val immediatePushRequested = _immediatePushRequested.asSharedFlow()
 
     val allCoupons: Flow<List<Coupon>> = couponDao.getAllCoupons()
     val unscannedCount: Flow<Int> = couponDao.getUnscannedCount()
@@ -54,7 +62,7 @@ class CouponRepository(private val couponDao: CouponDao) {
     }
 
     suspend fun insertCoupon(coupon: Coupon): Long = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
+        val now = currentSyncedTime()
         val toInsert = coupon.copy(
             syncId = if (coupon.syncId.isBlank()) UUID.randomUUID().toString() else coupon.syncId,
             modifiedAt = if (coupon.modifiedAt == 0L) now else coupon.modifiedAt,
@@ -70,7 +78,7 @@ class CouponRepository(private val couponDao: CouponDao) {
     }
 
     suspend fun updateCoupon(coupon: Coupon) = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
+        val now = currentSyncedTime()
         val toUpdate = coupon.copy(
             modifiedAt = now,
             dirty = true
@@ -81,10 +89,10 @@ class CouponRepository(private val couponDao: CouponDao) {
 
     suspend fun updateStatusBulk(ids: List<Long>, status: CouponStatus) = withContext(Dispatchers.IO) {
         if (ids.isEmpty()) return@withContext
-        val now = System.currentTimeMillis()
+        val now = currentSyncedTime()
         val redeemedTimestamp = if (status == CouponStatus.REDEEMED) now else null
         couponDao.updateStatusBulk(ids, status, redeemedTimestamp, now)
-        _localDataChanged.tryEmit(Unit)
+        _immediatePushRequested.tryEmit(Unit)
     }
 
     /**
@@ -103,7 +111,7 @@ class CouponRepository(private val couponDao: CouponDao) {
                 }
             }
         } else {
-            val now = System.currentTimeMillis()
+            val now = currentSyncedTime()
             couponDao.update(
                 coupon.copy(
                     deletedAt = now,
@@ -119,7 +127,7 @@ class CouponRepository(private val couponDao: CouponDao) {
     suspend fun deleteCouponsBulk(ids: List<Long>): Boolean = withContext(Dispatchers.IO) {
         if (ids.isEmpty()) return@withContext false
         val targetCoupons = couponDao.getCouponsByIds(ids)
-        val now = System.currentTimeMillis()
+        val now = currentSyncedTime()
         for (coupon in targetCoupons) {
             if (coupon.serverUpdatedAt == null) {
                 couponDao.delete(coupon)
@@ -140,7 +148,7 @@ class CouponRepository(private val couponDao: CouponDao) {
                 )
             }
         }
-        _localDataChanged.tryEmit(Unit)
+        _immediatePushRequested.tryEmit(Unit)
         true
     }
 
@@ -152,7 +160,12 @@ class CouponRepository(private val couponDao: CouponDao) {
         val redeemed = couponDao.getRedeemedCouponsList()
         if (redeemed.isEmpty()) return@withContext 0
         deleteCouponsBulk(redeemed.map { it.id })
+        _immediatePushRequested.tryEmit(Unit)
         redeemed.size
+    }
+
+    suspend fun getAllCouponsIncludingTombstones(): List<Coupon> = withContext(Dispatchers.IO) {
+        couponDao.getAllCouponsIncludingTombstones()
     }
 
     /**
@@ -297,5 +310,29 @@ class CouponRepository(private val couponDao: CouponDao) {
         } catch (e: Exception) {
             ProcessResult.Error(e.message ?: "Failed to decode photo")
         }
+    }
+
+    suspend fun getCouponsNeedingPhotoUpload(): List<Coupon> = withContext(Dispatchers.IO) {
+        couponDao.getCouponsNeedingPhotoUpload()
+    }
+
+    suspend fun getCouponsNeedingPhotoDownload(): List<Coupon> = withContext(Dispatchers.IO) {
+        couponDao.getCouponsNeedingPhotoDownload()
+    }
+
+    suspend fun updatePhotoUploadSuccess(
+        syncId: String,
+        remoteImagePath: String,
+        imageSha256: String,
+        imageVariant: String
+    ) = withContext(Dispatchers.IO) {
+        val now = currentSyncedTime()
+        couponDao.updatePhotoUploadSuccess(syncId, remoteImagePath, imageSha256, imageVariant, now)
+        _localDataChanged.tryEmit(Unit)
+    }
+
+    suspend fun updateLocalImagePath(syncId: String, localImagePath: String) = withContext(Dispatchers.IO) {
+        couponDao.updateLocalImagePath(syncId, localImagePath)
+        _localDataChanged.tryEmit(Unit)
     }
 }

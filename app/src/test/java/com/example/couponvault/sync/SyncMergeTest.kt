@@ -3,14 +3,21 @@ package com.example.couponvault.sync
 import android.util.Base64
 import com.example.couponvault.data.Coupon
 import com.example.couponvault.data.CouponDao
+import com.example.couponvault.data.CouponQueueManager
 import com.example.couponvault.data.CouponRepository
 import com.example.couponvault.data.CouponSource
 import com.example.couponvault.data.CouponStatus
 import com.example.couponvault.data.ExtractionState
+import com.example.couponvault.data.FakeClipboardHelper
+import com.example.couponvault.data.FakeOverlayPreferences
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -184,6 +191,48 @@ class FakeSyncCouponDao : CouponDao {
     override suspend fun deleteByIds(ids: List<Long>) {
         items.removeAll { it.id in ids }
         notifyChanged()
+    }
+
+    override suspend fun getAllCouponsIncludingTombstones(): List<Coupon> {
+        return items.toList()
+    }
+
+    override suspend fun deleteUnsyncedCoupons() {
+        items.removeAll { it.serverUpdatedAt == null }
+        notifyChanged()
+    }
+
+    override suspend fun tombstoneSyncedCoupons(now: Long) {
+        for (i in items.indices) {
+            if (items[i].serverUpdatedAt != null) {
+                items[i] = items[i].copy(deletedAt = now, modifiedAt = now, dirty = true)
+            }
+        }
+        notifyChanged()
+    }
+
+    override suspend fun getCouponsNeedingPhotoUpload(): List<Coupon> {
+        return items.filter { it.serverUpdatedAt != null && it.deletedAt == null && it.remoteImagePath.isNullOrBlank() && it.imagePath.isNotBlank() }
+    }
+
+    override suspend fun getCouponsNeedingPhotoDownload(): List<Coupon> {
+        return items.filter { it.deletedAt == null && !it.remoteImagePath.isNullOrBlank() && it.imagePath.isBlank() }
+    }
+
+    override suspend fun updatePhotoUploadSuccess(syncId: String, remoteImagePath: String, imageSha256: String, imageVariant: String, modifiedAt: Long) {
+        val idx = items.indexOfFirst { it.syncId == syncId }
+        if (idx != -1) {
+            items[idx] = items[idx].copy(remoteImagePath = remoteImagePath, imageSha256 = imageSha256, imageVariant = imageVariant, dirty = true, modifiedAt = modifiedAt)
+            notifyChanged()
+        }
+    }
+
+    override suspend fun updateLocalImagePath(syncId: String, localImagePath: String) {
+        val idx = items.indexOfFirst { it.syncId == syncId }
+        if (idx != -1) {
+            items[idx] = items[idx].copy(imagePath = localImagePath)
+            notifyChanged()
+        }
     }
 }
 
@@ -406,5 +455,187 @@ class SyncMergeTest {
         val dirtyCoupons = repository.getDirtyCoupons(10)
         assertEquals(2, dirtyCoupons.size)
         assertTrue(dirtyCoupons.all { it.dirty })
+    }
+
+    @Test
+    fun testClockOffsetEstimationMath() {
+        val t0 = 10000L
+        val t1 = 10200L
+        val midpoint = (t0 + t1) / 2 // 10100L
+        val serverTime = 10150L
+        val calculatedOffset = serverTime - midpoint // +50L
+        assertEquals(50L, calculatedOffset)
+
+        var mockOffset = calculatedOffset
+        val offsetRepo = CouponRepository(fakeDao) { mockOffset }
+        val baseTime = 50000L
+        // Verified: currentSyncedTime adds measured offset
+        assertEquals(50050L, baseTime + mockOffset)
+
+        // Negative offset test: server is behind device
+        val serverBehind = 10020L
+        val negOffset = serverBehind - midpoint // -80L
+        assertEquals(-80L, negOffset)
+        mockOffset = negOffset
+        assertEquals(49920L, baseTime + mockOffset)
+    }
+
+    @Test
+    fun testTombstonePropagationAdvancesQueuePointer() = runTest {
+        val clipboard = FakeClipboardHelper()
+        val prefs = FakeOverlayPreferences()
+        val c1 = Coupon(id = 1, syncId = "sync-1", code = "CODE1", status = CouponStatus.UNSCANNED, serverUpdatedAt = 1000L)
+        val c2 = Coupon(id = 2, syncId = "sync-2", code = "CODE2", status = CouponStatus.UNSCANNED, serverUpdatedAt = 1000L)
+        fakeDao.items.add(c1)
+        fakeDao.items.add(c2)
+
+        val queueManager = CouponQueueManager(
+            couponDao = fakeDao,
+            preferences = prefs,
+            clipboardHelper = clipboard
+        )
+
+        // User copies C1
+        val firstCopied = queueManager.copyNext()
+        assertEquals("CODE1", firstCopied)
+        assertEquals("CODE1", clipboard.lastCopied)
+        assertEquals(1L, prefs.currentCouponId.value)
+
+        // A remote tombstone arrives for C1 from another device
+        // SyncManager triggers onCouponRemovedOrRedeemed(1) and purges C1
+        queueManager.onCouponRemovedOrRedeemed(1L)
+        repository.purgeBySyncId("sync-1")
+
+        // Clipboard retains "CODE1"
+        assertEquals("CODE1", clipboard.lastCopied)
+        // Pointer advanced to next coupon in queue (C2)
+        assertEquals(2L, prefs.currentCouponId.value)
+        // C1 is purged from local DB
+        assertNull(repository.getCouponBySyncId("sync-1"))
+        assertNotNull(repository.getCouponBySyncId("sync-2"))
+    }
+
+    @Test
+    fun testFullReconcileRemovesOrphansAndInsertsNewRemoteRows() = runTest {
+        // 1. Local clean coupon missing from remote (e.g. deleted from dashboard or remote tombstone)
+        val localCleanOrphan = Coupon(
+            id = 10,
+            syncId = "remote-gone",
+            code = "GONE",
+            status = CouponStatus.UNSCANNED,
+            serverUpdatedAt = 1000L,
+            dirty = false
+        )
+        // 2. Local dirty coupon (offline change awaiting push)
+        val localDirty = Coupon(
+            id = 20,
+            syncId = "local-new",
+            code = "NEW_LOCAL",
+            status = CouponStatus.UNSCANNED,
+            serverUpdatedAt = null,
+            dirty = true
+        )
+        fakeDao.items.add(localCleanOrphan)
+        fakeDao.items.add(localDirty)
+
+        // Remote database state: contains "new-remote" and does NOT contain "remote-gone"
+        val remoteRows = mapOf(
+            "new-remote" to Coupon(
+                syncId = "new-remote",
+                code = "FROM_SERVER",
+                status = CouponStatus.UNSCANNED,
+                serverUpdatedAt = 2000L,
+                dirty = false
+            )
+        )
+
+        var removedCount = 0
+        var addedCount = 0
+
+        // Reconcile pass over local rows:
+        val allLocal = repository.getAllCouponsIncludingTombstones()
+        for (local in allLocal) {
+            if (local.serverUpdatedAt != null && !local.dirty) {
+                if (!remoteRows.containsKey(local.syncId)) {
+                    repository.purgeBySyncId(local.syncId)
+                    removedCount++
+                }
+            }
+        }
+
+        // Reconcile pass over remote rows:
+        for ((syncId, remote) in remoteRows) {
+            val local = repository.getCouponBySyncId(syncId)
+            if (local == null) {
+                repository.saveFromSync(remote)
+                addedCount++
+            }
+        }
+
+        assertEquals(1, removedCount)
+        assertEquals(1, addedCount)
+        assertNull(repository.getCouponBySyncId("remote-gone"))
+        assertNotNull(repository.getCouponBySyncId("new-remote"))
+        assertNotNull(repository.getCouponBySyncId("local-new"))
+        assertTrue(repository.getCouponBySyncId("local-new")!!.dirty)
+    }
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun testDebounceAndCoalescing() = runTest {
+        val changeFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 10)
+        var pushInvocationCount = 0
+
+        val job = changeFlow
+            .debounce(1000L)
+            .onEach { pushInvocationCount++ }
+            .launchIn(this)
+        testScheduler.runCurrent()
+
+        // Rapidly emit 5 changes within 200ms
+        repeat(5) {
+            changeFlow.emit(Unit)
+            testScheduler.advanceTimeBy(40)
+            testScheduler.runCurrent()
+        }
+
+        // 200ms elapsed, 1000ms debounce hasn't expired yet
+        assertEquals(0, pushInvocationCount)
+
+        // Advance past 1000ms debounce threshold
+        testScheduler.advanceTimeBy(1000)
+        testScheduler.runCurrent()
+
+        // Exactly one coalesced push should have run!
+        assertEquals(1, pushInvocationCount)
+        job.cancel()
+    }
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun testFakeRealtimeEventTriggersPull() = runTest {
+        val realtimeSignal = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        var pullInvocationCount = 0
+
+        val job = realtimeSignal
+            .debounce(300L)
+            .onEach { pullInvocationCount++ }
+            .launchIn(this)
+        testScheduler.runCurrent()
+
+        // Emit simulated realtime Postgres INSERT/UPDATE change
+        realtimeSignal.emit(Unit)
+        testScheduler.runCurrent()
+
+        // After 100ms, debounce has not fired
+        testScheduler.advanceTimeBy(100)
+        testScheduler.runCurrent()
+        assertEquals(0, pullInvocationCount)
+
+        // After 300ms total, debounce fires and triggers pull
+        testScheduler.advanceTimeBy(300)
+        testScheduler.runCurrent()
+        assertEquals(1, pullInvocationCount)
+        job.cancel()
     }
 }

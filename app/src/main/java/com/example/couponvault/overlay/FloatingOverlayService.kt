@@ -371,7 +371,12 @@ class FloatingOverlayService : Service() {
 
             textView.text = shortened
             badgeView.text = "${state.remainingCount}"
-            (badgeView.background as? GradientDrawable)?.setColor(0xFFB5532F.toInt())
+            val badgeBgColor = if (state.isLastCopyFallback) {
+                0xFF8A8275.toInt() // Muted paper slate tone (no extra text)
+            } else {
+                0xFFB5532F.toInt() // Clay accent
+            }
+            (badgeView.background as? GradientDrawable)?.setColor(badgeBgColor)
         }
     }
 
