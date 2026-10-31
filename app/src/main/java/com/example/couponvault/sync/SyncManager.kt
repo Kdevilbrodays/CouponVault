@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -41,7 +42,8 @@ data class SyncStatus(
     val state: SyncState = SyncState.IDLE,
     val lastSyncedAt: Long? = null,
     val errorMessage: String? = null,
-    val pendingCount: Int = 0
+    val pendingCount: Int = 0,
+    val skippedCount: Int = 0
 )
 
 data class ReconcileSummary(
@@ -54,7 +56,7 @@ class SyncManager(
     private val repository: CouponRepository,
     private val client: SupabaseClient,
     private val preferences: SupabasePreferences,
-    private val scope: CoroutineScope,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val queueManager: CouponQueueManager? = null,
     private val context: Context? = null
 ) {
@@ -66,17 +68,30 @@ class SyncManager(
         private const val SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000L
 
         fun parseIsoToMillis(isoString: String?): Long {
-            if (isoString.isNullOrBlank()) return System.currentTimeMillis()
-            val clean = isoString.trim().removeSurrounding("\"")
+            if (isoString.isNullOrBlank()) {
+                throw IllegalArgumentException("Blank or null ISO timestamp cannot be parsed")
+            }
+            val clean = isoString.trim().removeSurrounding("\"").replace(' ', 'T')
             return try {
                 OffsetDateTime.parse(clean).toInstant().toEpochMilli()
             } catch (_: Exception) {
                 try {
                     Instant.parse(clean).toEpochMilli()
-                } catch (_: Exception) {
-                    clean.toLongOrNull() ?: System.currentTimeMillis()
+                } catch (e: Exception) {
+                    clean.toLongOrNull() ?: throw IllegalArgumentException("Unparsable ISO timestamp: '$isoString'", e)
                 }
             }
+        }
+
+        /** Reads a timestamp field that may be an ISO-8601 string (Postgres timestamptz) or epoch millis. */
+        fun tsMillis(obj: org.json.JSONObject, key: String): Long {
+            val v = obj.get(key)
+            return if (v is Number) v.toLong() else parseIsoToMillis(v.toString())
+        }
+
+        /** Formats epoch milliseconds to an ISO-8601 UTC string (e.g. 2026-10-28T17:24:11.123Z). */
+        fun formatMillisToIso(millis: Long): String {
+            return Instant.ofEpochMilli(millis).toString()
         }
     }
 
@@ -163,6 +178,150 @@ class SyncManager(
         }
     }
 
+    /**
+     * Parses and applies a single pulled remote row into local storage.
+     * Returns true if successfully processed, or false if the row was invalid/skipped.
+     */
+    suspend fun applyPulledRow(item: JSONObject): Boolean {
+        val rowId = item.optString("id", "unknown")
+        return try {
+            val syncId = item.getString("id")
+            val code = if (item.isNull("code")) null else item.getString("code")
+            val statusStr = item.getString("status")
+            val sourceStr = item.getString("source")
+            val extractionStateStr = item.optString("extraction_state", "DONE")
+            val createdAt = tsMillis(item, "created_at")
+            val modifiedAt = tsMillis(item, "modified_at")
+            val redeemedAt = if (item.isNull("redeemed_at")) null else tsMillis(item, "redeemed_at")
+            val deletedAt = if (item.isNull("deleted_at")) null else tsMillis(item, "deleted_at")
+            val claimedBy = if (item.isNull("claimed_by")) null else item.getString("claimed_by")
+            val claimedAt = if (item.isNull("claimed_at")) null else tsMillis(item, "claimed_at")
+            val remoteImagePath = if (item.isNull("image_path")) null else item.getString("image_path")
+            val imageSha256 = if (item.isNull("image_sha256")) null else item.getString("image_sha256")
+            val imageVariant = if (item.isNull("image_variant")) null else item.getString("image_variant")
+            val updatedAtIso = item.getString("updated_at")
+            val serverUpdatedAt = parseIsoToMillis(updatedAtIso)
+
+            val localCoupon = repository.getCouponBySyncId(syncId)
+            if (localCoupon != null) {
+                if (localCoupon.dirty) {
+                    // LWW conflict resolution
+                    if (modifiedAt >= localCoupon.modifiedAt) {
+                        // Server wins
+                        if (deletedAt != null) {
+                            queueManager?.onCouponRemovedOrRedeemed(localCoupon.id)
+                            repository.purgeBySyncId(syncId)
+                        } else {
+                            if (statusStr == CouponStatus.REDEEMED.name) {
+                                queueManager?.onCouponRemovedOrRedeemed(localCoupon.id)
+                            }
+                            repository.saveFromSync(
+                                localCoupon.copy(
+                                    code = code,
+                                    status = CouponStatus.valueOf(statusStr),
+                                    source = CouponSource.valueOf(sourceStr),
+                                    extractionState = ExtractionState.valueOf(extractionStateStr),
+                                    createdAt = createdAt,
+                                    modifiedAt = modifiedAt,
+                                    redeemedAt = redeemedAt,
+                                    deletedAt = deletedAt,
+                                    claimedBy = claimedBy,
+                                    claimedAt = claimedAt,
+                                    remoteImagePath = remoteImagePath,
+                                    imageSha256 = imageSha256,
+                                    imageVariant = imageVariant,
+                                    serverUpdatedAt = serverUpdatedAt,
+                                    dirty = false
+                                )
+                            )
+                        }
+                    } else {
+                        Log.d(TAG, "Local coupon $syncId is newer than server; retaining local")
+                    }
+                } else {
+                    // Local is clean, apply server update
+                    if (deletedAt != null) {
+                        queueManager?.onCouponRemovedOrRedeemed(localCoupon.id)
+                        repository.purgeBySyncId(syncId)
+                    } else {
+                        if (statusStr == CouponStatus.REDEEMED.name) {
+                            queueManager?.onCouponRemovedOrRedeemed(localCoupon.id)
+                        }
+                        repository.saveFromSync(
+                            localCoupon.copy(
+                                code = code,
+                                status = CouponStatus.valueOf(statusStr),
+                                source = CouponSource.valueOf(sourceStr),
+                                extractionState = ExtractionState.valueOf(extractionStateStr),
+                                createdAt = createdAt,
+                                modifiedAt = modifiedAt,
+                                redeemedAt = redeemedAt,
+                                deletedAt = deletedAt,
+                                claimedBy = claimedBy,
+                                claimedAt = claimedAt,
+                                remoteImagePath = remoteImagePath,
+                                imageSha256 = imageSha256,
+                                imageVariant = imageVariant,
+                                serverUpdatedAt = serverUpdatedAt,
+                                dirty = false
+                            )
+                        )
+                    }
+                }
+            } else {
+                // Not present locally
+                if (deletedAt == null) {
+                    val localWithSameCode = if (!code.isNullOrBlank()) repository.getCouponByCode(code) else null
+                    if (localWithSameCode != null) {
+                        repository.saveFromSync(
+                            localWithSameCode.copy(
+                                syncId = syncId,
+                                status = CouponStatus.valueOf(statusStr),
+                                source = CouponSource.valueOf(sourceStr),
+                                extractionState = ExtractionState.valueOf(extractionStateStr),
+                                createdAt = createdAt,
+                                modifiedAt = modifiedAt,
+                                redeemedAt = redeemedAt,
+                                claimedBy = claimedBy,
+                                claimedAt = claimedAt,
+                                remoteImagePath = remoteImagePath,
+                                imageSha256 = imageSha256,
+                                imageVariant = imageVariant,
+                                serverUpdatedAt = serverUpdatedAt,
+                                dirty = false
+                            )
+                        )
+                    } else {
+                        val newCoupon = Coupon(
+                            syncId = syncId,
+                            code = code,
+                            imagePath = "",
+                            status = CouponStatus.valueOf(statusStr),
+                            source = CouponSource.valueOf(sourceStr),
+                            extractionState = ExtractionState.valueOf(extractionStateStr),
+                            createdAt = createdAt,
+                            modifiedAt = modifiedAt,
+                            redeemedAt = redeemedAt,
+                            deletedAt = null,
+                            claimedBy = claimedBy,
+                            claimedAt = claimedAt,
+                            remoteImagePath = remoteImagePath,
+                            imageSha256 = imageSha256,
+                            imageVariant = imageVariant,
+                            serverUpdatedAt = serverUpdatedAt,
+                            dirty = false
+                        )
+                        repository.saveFromSync(newCoupon)
+                    }
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Skipping invalid remote row $rowId: ${e.message}", e)
+            false
+        }
+    }
+
     suspend fun performSync(): Boolean = withContext(Dispatchers.IO) {
         syncInternal(isTriggeredByLocalChange = false)
     }
@@ -197,7 +356,8 @@ class SyncManager(
             val currentCursorIso = preferences.pullCursorFlow.first()
             val queryCursorIso = calculateCursorWithOverlap(currentCursorIso)
 
-            var highestServerUpdatedAtIso: String? = null
+            var totalSkipped = 0
+            var lastSkippedError: String? = null
             var hasMorePullPages = true
 
             while (hasMorePullPages) {
@@ -208,137 +368,31 @@ class SyncManager(
                 }
 
                 val pulledArray = pullResult.getOrThrow()
+                var pageHighestUpdatedAtIso: String? = null
+                var pageHighestUpdatedAtMillis: Long? = null
+
                 for (i in 0 until pulledArray.length()) {
                     val item = pulledArray.getJSONObject(i)
-                    val syncId = item.getString("id")
-                    val code = if (item.isNull("code")) null else item.getString("code")
-                    val statusStr = item.getString("status")
-                    val sourceStr = item.getString("source")
-                    val extractionStateStr = item.optString("extraction_state", "DONE")
-                    val createdAt = item.getLong("created_at")
-                    val modifiedAt = item.getLong("modified_at")
-                    val deletedAt = if (item.isNull("deleted_at")) null else item.getLong("deleted_at")
-                    val claimedBy = if (item.isNull("claimed_by")) null else item.getString("claimed_by")
-                    val claimedAt = if (item.isNull("claimed_at")) null else item.getLong("claimed_at")
-                    val remoteImagePath = if (item.isNull("image_path")) null else item.getString("image_path")
-                    val imageSha256 = if (item.isNull("image_sha256")) null else item.getString("image_sha256")
-                    val imageVariant = if (item.isNull("image_variant")) null else item.getString("image_variant")
-                    val updatedAtIso = item.getString("updated_at")
-                    val serverUpdatedAt = parseIsoToMillis(updatedAtIso)
-
-                    if (highestServerUpdatedAtIso == null || updatedAtIso > highestServerUpdatedAtIso) {
-                        highestServerUpdatedAtIso = updatedAtIso
-                    }
-
-                    val localCoupon = repository.getCouponBySyncId(syncId)
-                    if (localCoupon != null) {
-                        if (localCoupon.dirty) {
-                            // LWW conflict resolution
-                            if (modifiedAt >= localCoupon.modifiedAt) {
-                                // Server wins
-                                if (deletedAt != null) {
-                                    queueManager?.onCouponRemovedOrRedeemed(localCoupon.id)
-                                    repository.purgeBySyncId(syncId)
-                                } else {
-                                    if (statusStr == CouponStatus.REDEEMED.name) {
-                                        queueManager?.onCouponRemovedOrRedeemed(localCoupon.id)
-                                    }
-                                    repository.saveFromSync(
-                                        localCoupon.copy(
-                                            code = code,
-                                            status = CouponStatus.valueOf(statusStr),
-                                            source = CouponSource.valueOf(sourceStr),
-                                            extractionState = ExtractionState.valueOf(extractionStateStr),
-                                            createdAt = createdAt,
-                                            modifiedAt = modifiedAt,
-                                            deletedAt = deletedAt,
-                                            claimedBy = claimedBy,
-                                            claimedAt = claimedAt,
-                                            remoteImagePath = remoteImagePath,
-                                            imageSha256 = imageSha256,
-                                            imageVariant = imageVariant,
-                                            serverUpdatedAt = serverUpdatedAt,
-                                            dirty = false
-                                        )
-                                    )
-                                }
-                            } else {
-                                Log.d(TAG, "Local coupon $syncId is newer than server; retaining local")
+                    val rowId = item.optString("id", "unknown")
+                    val applied = applyPulledRow(item)
+                    if (applied) {
+                        try {
+                            val updatedAtIso = item.getString("updated_at")
+                            val serverUpdatedAt = parseIsoToMillis(updatedAtIso)
+                            if (pageHighestUpdatedAtMillis == null || serverUpdatedAt > pageHighestUpdatedAtMillis) {
+                                pageHighestUpdatedAtMillis = serverUpdatedAt
+                                pageHighestUpdatedAtIso = updatedAtIso
                             }
-                        } else {
-                            // Local is clean, apply server update
-                            if (deletedAt != null) {
-                                queueManager?.onCouponRemovedOrRedeemed(localCoupon.id)
-                                repository.purgeBySyncId(syncId)
-                            } else {
-                                if (statusStr == CouponStatus.REDEEMED.name) {
-                                    queueManager?.onCouponRemovedOrRedeemed(localCoupon.id)
-                                }
-                                repository.saveFromSync(
-                                    localCoupon.copy(
-                                        code = code,
-                                        status = CouponStatus.valueOf(statusStr),
-                                        source = CouponSource.valueOf(sourceStr),
-                                        extractionState = ExtractionState.valueOf(extractionStateStr),
-                                        createdAt = createdAt,
-                                        modifiedAt = modifiedAt,
-                                        deletedAt = deletedAt,
-                                        claimedBy = claimedBy,
-                                        claimedAt = claimedAt,
-                                        remoteImagePath = remoteImagePath,
-                                        imageSha256 = imageSha256,
-                                        imageVariant = imageVariant,
-                                        serverUpdatedAt = serverUpdatedAt,
-                                        dirty = false
-                                    )
-                                )
-                            }
-                        }
+                        } catch (_: Exception) {}
                     } else {
-                        // Not present locally
-                        if (deletedAt == null) {
-                            val localWithSameCode = if (!code.isNullOrBlank()) repository.getCouponByCode(code) else null
-                            if (localWithSameCode != null) {
-                                repository.saveFromSync(
-                                    localWithSameCode.copy(
-                                        syncId = syncId,
-                                        status = CouponStatus.valueOf(statusStr),
-                                        source = CouponSource.valueOf(sourceStr),
-                                        extractionState = ExtractionState.valueOf(extractionStateStr),
-                                        createdAt = createdAt,
-                                        modifiedAt = modifiedAt,
-                                        claimedBy = claimedBy,
-                                        claimedAt = claimedAt,
-                                        remoteImagePath = remoteImagePath,
-                                        imageSha256 = imageSha256,
-                                        imageVariant = imageVariant,
-                                        serverUpdatedAt = serverUpdatedAt,
-                                        dirty = false
-                                    )
-                                )
-                            } else {
-                                val newCoupon = Coupon(
-                                    syncId = syncId,
-                                    code = code,
-                                    imagePath = "",
-                                    status = CouponStatus.valueOf(statusStr),
-                                    source = CouponSource.valueOf(sourceStr),
-                                    extractionState = ExtractionState.valueOf(extractionStateStr),
-                                    createdAt = createdAt,
-                                    modifiedAt = modifiedAt,
-                                    deletedAt = null,
-                                    claimedBy = claimedBy,
-                                    claimedAt = claimedAt,
-                                    remoteImagePath = remoteImagePath,
-                                    imageSha256 = imageSha256,
-                                    imageVariant = imageVariant,
-                                    serverUpdatedAt = serverUpdatedAt,
-                                    dirty = false
-                                )
-                                repository.saveFromSync(newCoupon)
-                            }
-                        }
+                        totalSkipped++
+                        lastSkippedError = "Row $rowId skipped due to invalid data"
                     }
+                }
+
+                // Only advance the pull cursor after the page has been applied
+                if (pageHighestUpdatedAtIso != null) {
+                    preferences.setPullCursor(pageHighestUpdatedAtIso)
                 }
 
                 if (pulledArray.length() < 500) {
@@ -346,18 +400,20 @@ class SyncManager(
                 }
             }
 
-            if (highestServerUpdatedAtIso != null) {
-                preferences.setPullCursor(highestServerUpdatedAtIso)
-            }
             val now = System.currentTimeMillis()
             preferences.setLastSynced(now)
             preferences.setLastPullTime(now)
-            preferences.setLastError(null)
+            if (lastSkippedError != null) {
+                preferences.setLastError(lastSkippedError)
+            } else {
+                preferences.setLastError(null)
+            }
 
             _syncStatus.value = _syncStatus.value.copy(
                 state = SyncState.IDLE,
                 lastSyncedAt = now,
-                errorMessage = null
+                skippedCount = totalSkipped,
+                errorMessage = lastSkippedError
             )
 
             // Trigger photo upload for synced rows if photo sync is enabled
@@ -405,11 +461,12 @@ class SyncManager(
                     put("status", coupon.status.name)
                     put("source", coupon.source.name)
                     put("extraction_state", coupon.extractionState.name)
-                    put("created_at", coupon.createdAt)
-                    put("modified_at", coupon.modifiedAt)
-                    if (coupon.deletedAt != null) put("deleted_at", coupon.deletedAt) else put("deleted_at", JSONObject.NULL)
+                    put("created_at", formatMillisToIso(coupon.createdAt))
+                    put("modified_at", formatMillisToIso(coupon.modifiedAt))
+                    if (coupon.redeemedAt != null) put("redeemed_at", formatMillisToIso(coupon.redeemedAt)) else put("redeemed_at", JSONObject.NULL)
+                    if (coupon.deletedAt != null) put("deleted_at", formatMillisToIso(coupon.deletedAt)) else put("deleted_at", JSONObject.NULL)
                     if (coupon.claimedBy != null) put("claimed_by", coupon.claimedBy) else put("claimed_by", JSONObject.NULL)
-                    if (coupon.claimedAt != null) put("claimed_at", coupon.claimedAt) else put("claimed_at", JSONObject.NULL)
+                    if (coupon.claimedAt != null) put("claimed_at", formatMillisToIso(coupon.claimedAt)) else put("claimed_at", JSONObject.NULL)
                     if (coupon.remoteImagePath != null) {
                         put("image_path", coupon.remoteImagePath)
                         put("remote_image_path", coupon.remoteImagePath)
@@ -539,9 +596,14 @@ class SyncManager(
             for (local in allLocal) {
                 if (local.serverUpdatedAt != null && !local.dirty) {
                     val remoteObj = remoteMap[local.syncId]
-                    val remoteDeletedAt = if (remoteObj != null && !remoteObj.isNull("deleted_at")) {
-                        remoteObj.getLong("deleted_at")
-                    } else null
+                    val remoteDeletedAt = try {
+                        if (remoteObj != null && !remoteObj.isNull("deleted_at")) {
+                            tsMillis(remoteObj, "deleted_at")
+                        } else null
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error parsing deleted_at for row ${local.syncId}: ${e.message}")
+                        null
+                    }
 
                     if (remoteObj == null || remoteDeletedAt != null) {
                         queueManager?.onCouponRemovedOrRedeemed(local.id)
@@ -551,44 +613,93 @@ class SyncManager(
                 }
             }
 
+            var totalSkipped = 0
+            var lastSkippedError: String? = null
+
             // 4. Insert remote rows missing locally
             for ((syncId, remoteObj) in remoteMap) {
-                val deletedAt = if (remoteObj.isNull("deleted_at")) null else remoteObj.getLong("deleted_at")
-                if (deletedAt != null) {
-                    val local = repository.getCouponBySyncId(syncId)
-                    if (local != null && !local.dirty) {
-                        queueManager?.onCouponRemovedOrRedeemed(local.id)
-                        repository.purgeBySyncId(syncId)
+                try {
+                    val deletedAt = if (remoteObj.isNull("deleted_at")) null else tsMillis(remoteObj, "deleted_at")
+                    if (deletedAt != null) {
+                        val local = repository.getCouponBySyncId(syncId)
+                        if (local != null && !local.dirty) {
+                            queueManager?.onCouponRemovedOrRedeemed(local.id)
+                            repository.purgeBySyncId(syncId)
+                        }
+                        continue
                     }
-                    continue
-                }
 
-                val local = repository.getCouponBySyncId(syncId)
-                val code = if (remoteObj.isNull("code")) null else remoteObj.getString("code")
-                val statusStr = remoteObj.getString("status")
-                val sourceStr = remoteObj.getString("source")
-                val extractionStateStr = remoteObj.optString("extraction_state", "DONE")
-                val createdAt = remoteObj.getLong("created_at")
-                val modifiedAt = remoteObj.getLong("modified_at")
-                val claimedBy = if (remoteObj.isNull("claimed_by")) null else remoteObj.getString("claimed_by")
-                val claimedAt = if (remoteObj.isNull("claimed_at")) null else remoteObj.getLong("claimed_at")
-                val remoteImagePath = if (remoteObj.isNull("image_path")) null else remoteObj.getString("image_path")
-                val imageSha256 = if (remoteObj.isNull("image_sha256")) null else remoteObj.getString("image_sha256")
-                val imageVariant = if (remoteObj.isNull("image_variant")) null else remoteObj.getString("image_variant")
-                val updatedAtIso = remoteObj.getString("updated_at")
-                val serverUpdatedAt = parseIsoToMillis(updatedAtIso)
+                    val local = repository.getCouponBySyncId(syncId)
+                    val code = if (remoteObj.isNull("code")) null else remoteObj.getString("code")
+                    val statusStr = remoteObj.getString("status")
+                    val sourceStr = remoteObj.getString("source")
+                    val extractionStateStr = remoteObj.optString("extraction_state", "DONE")
+                    val createdAt = tsMillis(remoteObj, "created_at")
+                    val modifiedAt = tsMillis(remoteObj, "modified_at")
+                    val redeemedAt = if (remoteObj.isNull("redeemed_at")) null else tsMillis(remoteObj, "redeemed_at")
+                    val claimedBy = if (remoteObj.isNull("claimed_by")) null else remoteObj.getString("claimed_by")
+                    val claimedAt = if (remoteObj.isNull("claimed_at")) null else tsMillis(remoteObj, "claimed_at")
+                    val remoteImagePath = if (remoteObj.isNull("image_path")) null else remoteObj.getString("image_path")
+                    val imageSha256 = if (remoteObj.isNull("image_sha256")) null else remoteObj.getString("image_sha256")
+                    val imageVariant = if (remoteObj.isNull("image_variant")) null else remoteObj.getString("image_variant")
+                    val updatedAtIso = remoteObj.getString("updated_at")
+                    val serverUpdatedAt = parseIsoToMillis(updatedAtIso)
 
-                if (local == null) {
-                    val localWithSameCode = if (!code.isNullOrBlank()) repository.getCouponByCode(code) else null
-                    if (localWithSameCode != null) {
-                        repository.saveFromSync(
-                            localWithSameCode.copy(
+                    if (local == null) {
+                        val localWithSameCode = if (!code.isNullOrBlank()) repository.getCouponByCode(code) else null
+                        if (localWithSameCode != null) {
+                            repository.saveFromSync(
+                                localWithSameCode.copy(
+                                    syncId = syncId,
+                                    status = CouponStatus.valueOf(statusStr),
+                                    source = CouponSource.valueOf(sourceStr),
+                                    extractionState = ExtractionState.valueOf(extractionStateStr),
+                                    createdAt = createdAt,
+                                    modifiedAt = modifiedAt,
+                                    redeemedAt = redeemedAt,
+                                    claimedBy = claimedBy,
+                                    claimedAt = claimedAt,
+                                    remoteImagePath = remoteImagePath,
+                                    imageSha256 = imageSha256,
+                                    imageVariant = imageVariant,
+                                    serverUpdatedAt = serverUpdatedAt,
+                                    dirty = false
+                                )
+                            )
+                        } else {
+                            val newCoupon = Coupon(
                                 syncId = syncId,
+                                code = code,
+                                imagePath = "",
                                 status = CouponStatus.valueOf(statusStr),
                                 source = CouponSource.valueOf(sourceStr),
                                 extractionState = ExtractionState.valueOf(extractionStateStr),
                                 createdAt = createdAt,
                                 modifiedAt = modifiedAt,
+                                redeemedAt = redeemedAt,
+                                deletedAt = null,
+                                claimedBy = claimedBy,
+                                claimedAt = claimedAt,
+                                remoteImagePath = remoteImagePath,
+                                imageSha256 = imageSha256,
+                                imageVariant = imageVariant,
+                                serverUpdatedAt = serverUpdatedAt,
+                                dirty = false
+                            )
+                            repository.saveFromSync(newCoupon)
+                            addedCount++
+                        }
+                    } else if (!local.dirty) {
+                        repository.saveFromSync(
+                            local.copy(
+                                code = code,
+                                status = CouponStatus.valueOf(statusStr),
+                                source = CouponSource.valueOf(sourceStr),
+                                extractionState = ExtractionState.valueOf(extractionStateStr),
+                                createdAt = createdAt,
+                                modifiedAt = modifiedAt,
+                                redeemedAt = redeemedAt,
+                                deletedAt = null,
                                 claimedBy = claimedBy,
                                 claimedAt = claimedAt,
                                 remoteImagePath = remoteImagePath,
@@ -598,47 +709,11 @@ class SyncManager(
                                 dirty = false
                             )
                         )
-                    } else {
-                        val newCoupon = Coupon(
-                            syncId = syncId,
-                            code = code,
-                            imagePath = "",
-                            status = CouponStatus.valueOf(statusStr),
-                            source = CouponSource.valueOf(sourceStr),
-                            extractionState = ExtractionState.valueOf(extractionStateStr),
-                            createdAt = createdAt,
-                            modifiedAt = modifiedAt,
-                            deletedAt = null,
-                            claimedBy = claimedBy,
-                            claimedAt = claimedAt,
-                            remoteImagePath = remoteImagePath,
-                            imageSha256 = imageSha256,
-                            imageVariant = imageVariant,
-                            serverUpdatedAt = serverUpdatedAt,
-                            dirty = false
-                        )
-                        repository.saveFromSync(newCoupon)
-                        addedCount++
                     }
-                } else if (!local.dirty) {
-                    repository.saveFromSync(
-                        local.copy(
-                            code = code,
-                            status = CouponStatus.valueOf(statusStr),
-                            source = CouponSource.valueOf(sourceStr),
-                            extractionState = ExtractionState.valueOf(extractionStateStr),
-                            createdAt = createdAt,
-                            modifiedAt = modifiedAt,
-                            deletedAt = null,
-                            claimedBy = claimedBy,
-                            claimedAt = claimedAt,
-                            remoteImagePath = remoteImagePath,
-                            imageSha256 = imageSha256,
-                            imageVariant = imageVariant,
-                            serverUpdatedAt = serverUpdatedAt,
-                            dirty = false
-                        )
-                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Skipping invalid remote row in reconcile $syncId: ${e.message}", e)
+                    totalSkipped++
+                    lastSkippedError = "Row $syncId skipped in reconcile due to invalid data"
                 }
             }
 
@@ -646,12 +721,17 @@ class SyncManager(
             preferences.setLastFullReconcile(now)
             preferences.setLastPullTime(now)
             preferences.setLastSynced(now)
-            preferences.setLastError(null)
+            if (lastSkippedError != null) {
+                preferences.setLastError(lastSkippedError)
+            } else {
+                preferences.setLastError(null)
+            }
 
             _syncStatus.value = _syncStatus.value.copy(
                 state = SyncState.IDLE,
                 lastSyncedAt = now,
-                errorMessage = null
+                skippedCount = totalSkipped,
+                errorMessage = lastSkippedError
             )
 
             val summary = ReconcileSummary(removedCount = removedCount, addedCount = addedCount)

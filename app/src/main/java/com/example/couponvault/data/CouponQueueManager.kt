@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
+import com.example.couponvault.sync.SyncManager
 import com.example.couponvault.sync.SupabaseClient
 import com.example.couponvault.sync.SupabasePreferences
 import com.example.couponvault.util.ClipboardHelper
@@ -101,13 +102,9 @@ class CouponQueueManager(
         if (value is Number) return value.toLong()
         val str = value.toString().trim().removeSurrounding("\"")
         return try {
-            java.time.OffsetDateTime.parse(str).toInstant().toEpochMilli()
+            SyncManager.parseIsoToMillis(str)
         } catch (_: Exception) {
-            try {
-                java.time.Instant.parse(str).toEpochMilli()
-            } catch (_: Exception) {
-                str.toLongOrNull() ?: System.currentTimeMillis()
-            }
+            str.toLongOrNull() ?: System.currentTimeMillis()
         }
     }
 
@@ -129,16 +126,16 @@ class CouponQueueManager(
         } catch (_: Exception) {
             ExtractionState.DONE
         }
-        val createdAt = parseTimestamp(item.opt("created_at"))
-        val modifiedAt = parseTimestamp(item.opt("modified_at"))
-        val redeemedAt = if (item.isNull("redeemed_at")) null else parseTimestamp(item.opt("redeemed_at"))
-        val deletedAt = if (item.isNull("deleted_at")) null else parseTimestamp(item.opt("deleted_at"))
+        val createdAt = SyncManager.tsMillis(item, "created_at")
+        val modifiedAt = SyncManager.tsMillis(item, "modified_at")
+        val redeemedAt = if (item.isNull("redeemed_at")) null else SyncManager.tsMillis(item, "redeemed_at")
+        val deletedAt = if (item.isNull("deleted_at")) null else SyncManager.tsMillis(item, "deleted_at")
         val claimedBy = if (item.isNull("claimed_by")) null else item.getString("claimed_by")
-        val claimedAt = if (item.isNull("claimed_at")) null else parseTimestamp(item.opt("claimed_at"))
+        val claimedAt = if (item.isNull("claimed_at")) null else SyncManager.tsMillis(item, "claimed_at")
         val remoteImagePath = if (item.isNull("image_path")) null else item.getString("image_path")
         val imageSha256 = if (item.isNull("image_sha256")) null else item.getString("image_sha256")
         val imageVariant = if (item.isNull("image_variant")) null else item.getString("image_variant")
-        val serverUpdatedAt = if (item.isNull("updated_at")) null else parseTimestamp(item.opt("updated_at"))
+        val serverUpdatedAt = if (item.isNull("updated_at")) null else SyncManager.tsMillis(item, "updated_at")
 
         return Coupon(
             id = 0L,
@@ -259,7 +256,7 @@ class CouponQueueManager(
                         } else {
                             val updated = localCoupon.copy(
                                 claimedBy = if (claimedRow.isNull("claimed_by")) deviceId else claimedRow.getString("claimed_by"),
-                                claimedAt = if (claimedRow.isNull("claimed_at")) System.currentTimeMillis() else parseTimestamp(claimedRow.opt("claimed_at")),
+                                claimedAt = if (claimedRow.isNull("claimed_at")) System.currentTimeMillis() else SyncManager.tsMillis(claimedRow, "claimed_at"),
                                 status = CouponStatus.UNSCANNED
                             )
                             couponDao.update(updated)

@@ -345,6 +345,13 @@ private fun SignedInSection(
                         value = "${if (clockOffset >= 0) "+$clockOffset" else "$clockOffset"} ms" +
                                 if (clockOffset == 0L) " (synchronized)" else " relative to server"
                     )
+                    if (syncStatus.skippedCount > 0) {
+                        SyncMetricRow(
+                            label = "Skipped rows",
+                            value = "${syncStatus.skippedCount} invalid row(s) skipped",
+                            isError = true
+                        )
+                    }
                     SyncMetricRow(
                         label = "Last error",
                         value = lastError ?: "None",

@@ -10,6 +10,10 @@ import com.example.couponvault.data.CouponStatus
 import com.example.couponvault.data.ExtractionState
 import com.example.couponvault.data.FakeClipboardHelper
 import com.example.couponvault.data.FakeOverlayPreferences
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,8 +28,14 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.json.JSONObject
+import androidx.test.core.app.ApplicationProvider
+import android.content.Context
 import java.util.UUID
 
 class FakeSyncCouponDao : CouponDao {
@@ -236,6 +246,7 @@ class FakeSyncCouponDao : CouponDao {
     }
 }
 
+@RunWith(RobolectricTestRunner::class)
 class SyncMergeTest {
 
     private lateinit var fakeDao: FakeSyncCouponDao
@@ -637,5 +648,166 @@ class SyncMergeTest {
         testScheduler.runCurrent()
         assertEquals(1, pullInvocationCount)
         job.cancel()
+    }
+
+    @Test
+    fun testTsMillisAndParseIsoFormats() {
+        // Long / epoch number
+        val objLong = JSONObject("""{"ts": 1793208251000}""")
+        assertEquals(1793208251000L, SyncManager.tsMillis(objLong, "ts"))
+
+        // Int / epoch number
+        val objInt = JSONObject("""{"ts": 123456}""")
+        assertEquals(123456L, SyncManager.tsMillis(objInt, "ts"))
+
+        // ISO-8601 with Z
+        assertEquals(1793208251000L, SyncManager.parseIsoToMillis("2026-10-28T17:24:11Z"))
+
+        // ISO-8601 with fractional seconds (6 digits) and +00:00 offset
+        assertEquals(1793208251123L, SyncManager.parseIsoToMillis("2026-10-28T17:24:11.123456+00:00"))
+
+        // ISO-8601 with 1 fractional digit and positive offset +05:30
+        assertEquals(1793208251500L, SyncManager.parseIsoToMillis("2026-10-28T22:54:11.5+05:30"))
+
+        // Space instead of 'T' and +00 offset
+        assertEquals(1793208251000L, SyncManager.parseIsoToMillis("2026-10-28 17:24:11+00"))
+
+        // tsMillis with ISO-8601 string value
+        val objIso = JSONObject("""{"created_at": "2026-10-28T17:24:11.123456+00:00"}""")
+        assertEquals(1793208251123L, SyncManager.tsMillis(objIso, "created_at"))
+
+        // Invalid string throws IllegalArgumentException
+        assertThrows(IllegalArgumentException::class.java) {
+            SyncManager.parseIsoToMillis("not-a-valid-date")
+        }
+
+        // Blank string throws IllegalArgumentException
+        assertThrows(IllegalArgumentException::class.java) {
+            SyncManager.parseIsoToMillis("   ")
+        }
+    }
+
+    @Test
+    fun testFormatMillisToIso() {
+        val iso = SyncManager.formatMillisToIso(1793208251123L)
+        assertEquals("2026-10-28T17:24:11.123Z", iso)
+        assertEquals(1793208251123L, SyncManager.parseIsoToMillis(iso))
+    }
+
+    @Test
+    fun testEndToEndPostgrestRowParsing() = runTest {
+        val jsonStr = """
+        {
+          "id": "11111111-1111-1111-1111-111111111111",
+          "owner": "22222222-2222-2222-2222-222222222222",
+          "code": "A51PEWKCWB81MXN",
+          "status": "UNSCANNED",
+          "source": "QR",
+          "created_at": "2026-10-28T17:24:11.123456+00:00",
+          "redeemed_at": null,
+          "modified_at": "2026-10-28T17:24:11.123+00:00",
+          "deleted_at": null,
+          "image_path": null,
+          "image_sha256": null,
+          "image_variant": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "updated_at": "2026-10-28T17:24:12.456789+00:00"
+        }
+        """.trimIndent()
+        val item = JSONObject(jsonStr)
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = SupabasePreferences(context)
+        val client = SupabaseClient(prefs)
+        val testScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val syncManager = SyncManager(repository, client, prefs, scope = testScope, context = context)
+
+            val success = syncManager.applyPulledRow(item)
+            assertTrue(success)
+
+            val saved = repository.getCouponBySyncId("11111111-1111-1111-1111-111111111111")
+            assertNotNull(saved)
+            assertEquals("A51PEWKCWB81MXN", saved!!.code)
+            assertEquals(1793208251123L, saved.createdAt)
+            assertEquals(1793208251123L, saved.modifiedAt)
+            assertEquals(1793208252456L, saved.serverUpdatedAt)
+            assertNull(saved.redeemedAt)
+            assertNull(saved.deletedAt)
+            assertNull(saved.claimedBy)
+            assertNull(saved.claimedAt)
+            assertFalse(saved.dirty)
+        } finally {
+            testScope.cancel()
+        }
+    }
+
+    @Test
+    fun testReconcileTombstoneWithIsoString() = runTest {
+        // Local coupon synced previously
+        val localCoupon = Coupon(
+            syncId = "tombstone-sync-id",
+            code = "DELETE_ME",
+            imagePath = "",
+            status = CouponStatus.UNSCANNED,
+            serverUpdatedAt = 1793208000000L,
+            dirty = false
+        )
+        repository.saveFromSync(localCoupon)
+        assertNotNull(repository.getCouponBySyncId("tombstone-sync-id"))
+
+        // Remote map has deleted_at as an ISO string
+        val remoteMap = mapOf(
+            "tombstone-sync-id" to JSONObject("""
+            {
+                "id": "tombstone-sync-id",
+                "deleted_at": "2026-10-28T17:24:11.123456+00:00",
+                "updated_at": "2026-10-28T17:24:11.123456+00:00"
+            }
+            """)
+        )
+
+        val allLocal = repository.getAllCouponsIncludingTombstones()
+        var removedCount = 0
+        for (local in allLocal) {
+            if (local.serverUpdatedAt != null && !local.dirty) {
+                val remoteObj = remoteMap[local.syncId]
+                val remoteDeletedAt = try {
+                    if (remoteObj != null && !remoteObj.isNull("deleted_at")) {
+                        SyncManager.tsMillis(remoteObj, "deleted_at")
+                    } else null
+                } catch (_: Exception) {
+                    null
+                }
+                if (remoteObj == null || remoteDeletedAt != null) {
+                    repository.purgeBySyncId(local.syncId)
+                    removedCount++
+                }
+            }
+        }
+        assertEquals(1, removedCount)
+        assertNull(repository.getCouponBySyncId("tombstone-sync-id"))
+    }
+
+    @Test
+    fun testSkippedRowHandling() = runTest {
+        val invalidRow = JSONObject("""
+        {
+            "id": "invalid-row-id",
+            "status": "NON_EXISTENT_STATUS",
+            "created_at": "not-a-valid-date"
+        }
+        """)
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = SupabasePreferences(context)
+        val client = SupabaseClient(prefs)
+        val testScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val syncManager = SyncManager(repository, client, prefs, scope = testScope, context = context)
+            val result = syncManager.applyPulledRow(invalidRow)
+            assertFalse(result)
+        } finally {
+            testScope.cancel()
+        }
     }
 }
